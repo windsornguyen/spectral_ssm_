@@ -13,4 +13,4 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Spectral SSM."""
+"""Spectral SSM, PyTorch version."""

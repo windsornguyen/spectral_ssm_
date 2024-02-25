@@ -15,17 +15,21 @@
 
 """Spectral temporal unit (STU) block."""
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import functools
+
+import haiku as hk
+import jax
+import jax.numpy as jnp
+
 from spectral_ssm import stu_utils
 
 
+@functools.partial(jax.vmap, in_axes=(None, 0, None))
 def apply_stu(
-    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    inputs: torch.Tensor,
-    eigh: tuple[torch.Tensor, torch.Tensor],
-) -> torch.Tensor:
+    params: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray],
+    inputs: jnp.ndarray,
+    eigh: tuple[jnp.ndarray, jnp.ndarray],
+) -> jnp.ndarray:
     """Apply STU.
 
     Args:
@@ -34,8 +38,8 @@ def apply_stu(
       inputs: Input matrix of shape [l, d_in].
       eigh: A tuple of eigenvalues [k] and circulant eigenvecs [k, l, l].
 
-      Returns:
-        A sequence of y_ts of shape [l, d_out].
+    Returns:
+      A sequence of y_ts of shape [l, d_out].
     """
     m_y, m_u, m_phi = params
 
@@ -51,7 +55,7 @@ def apply_stu(
     return stu_utils.compute_y_t(m_y, delta_phi + delta_ar_u)
 
 
-class STU(nn.Module):
+class STU(hk.Module):
     """Simple STU Layer."""
 
     def __init__(
@@ -68,12 +72,12 @@ class STU(nn.Module):
         Args:
           d_out: Output dimension.
           input_len: Input sequence length.
-          num_eigh: Tuple of eigenvalues and vectors sized (k,) and (l, k)
+          num_eigh: Tuple of eigen values and vecs sized (k,) and (l, k)
           auto_reg_k_u: Auto-regressive depth on the input sequence,
           auto_reg_k_y: Auto-regressive depth on the output sequence,
           learnable_m_y: m_y matrix learnable,
         """
-        super(STU, self).__init__()
+        super().__init__()
         self.d_out = d_out
         self.eigh = stu_utils.get_top_hankel_eigh(input_len, num_eigh)
         self.l, self.k = input_len, num_eigh
@@ -82,25 +86,18 @@ class STU(nn.Module):
         self.learnable_m_y = learnable_m_y
         self.m_x_var = 1.0 / (float(self.d_out) ** 0.5)
 
-        if learnable_m_y:
-            self.m_y = nn.Parameter(
-                torch.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
-            )
-        else:
-            self.register_buffer(
-                "m_y", torch.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
-            )
+        self.init_m_y = jnp.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
 
-        # NOTE: Assume d_in = d_out
-        self.m_u = nn.Parameter(
-            stu_utils.get_random_real_matrix((d_out, d_out, auto_reg_k_u), self.m_x_var)
+        # NOTE: Assume d_in = d_out.
+        self.init_m_u = stu_utils.get_random_real_matrix(
+            (self.d_out, self.d_out, self.auto_reg_k_u), self.m_x_var
         )
-        self.m_phi = nn.Parameter(torch.zeros(d_out * num_eigh, d_out))
+        self.init_m_phi = jnp.zeros([self.d_out * self.k, self.d_out])
 
-    def forward(
+    def __call__(
         self,
-        inputs: torch.Tensor,
-    ) -> torch.Tensor:
+        inputs: jnp.ndarray,
+    ) -> jnp.ndarray:
         """Forward pass.
 
         Args:
@@ -108,14 +105,40 @@ class STU(nn.Module):
             sequence length, H is number of features (channels) in the input.
 
         Returns:
-          `torch.Tensor` of preactivations.
+          `jnp.ndarray` of preactivations.
         """
+        d_in = inputs.shape[-1]
+        input_dtype = inputs.dtype
 
-        params = (self.m_y, self.m_u, self.m_phi)
+        if self.learnable_m_y:
+            m_y = hk.get_parameter(
+                "m_y",
+                shape=[self.d_out, self.auto_reg_k_y, self.d_out],
+                dtype=input_dtype,
+                init=lambda s, d: self.init_m_y,
+            )
+        else:
+            m_y = self.init_m_y
+
+        m_u = hk.get_parameter(
+            "m_u",
+            shape=[d_in, self.d_out, self.auto_reg_k_u],
+            dtype=input_dtype,
+            init=lambda s, d: self.init_m_u,
+        )
+        m_phi = hk.get_parameter(
+            "m_phi",
+            shape=[d_in * self.k, self.d_out],
+            dtype=input_dtype,
+            init=lambda s, d: self.init_m_phi,
+        )
+
+        params = (m_y, m_u, m_phi)
+
         return apply_stu(params, inputs, self.eigh)
 
 
-class Architecture(nn.Module):
+class Architecture(hk.Module):
     """General model architecture."""
 
     def __init__(
@@ -141,32 +164,26 @@ class Architecture(nn.Module):
           dropout: Dropout rate.
           input_len: Input sequence length.
           num_eigh: Number of eigen values and vecs.
-          auto_reg_k_u: Auto-regressive depth on the input sequence,
-          auto_reg_k_y: Auto-regressive depth on the output sequence,
-          learnable_m_y: m_y matrix learnable,
+          auto_reg_k_u: Auto-regressive depth on the input sequence.
+          auto_reg_k_y: Auto-regressive depth on the output sequence.
+          learnable_m_y: m_y matrix learnable.
         """
-        super(Architecture, self).__init__()
+        super().__init__(name=name)
         self.d_model = d_model
         self.d_target = d_target
         self.num_layers = num_layers
-        self.dropout = nn.Dropout(dropout)
-        self.layers = nn.ModuleList(
-            [
-                STU(
-                    d_out=d_model,
-                    input_len=input_len,
-                    num_eigh=num_eigh,
-                    auto_reg_k_u=auto_reg_k_u,
-                    auto_reg_k_y=auto_reg_k_y,
-                    learnable_m_y=learnable_m_y,
-                )
-                for _ in range(num_layers)
-            ]
-        )
-        self.embeddings = nn.Linear(d_model, d_model)
-        self.final_layer = nn.Linear(d_model, d_target)
+        self.dropout = dropout
+        self.input_len = input_len
+        self.num_eigh = num_eigh
+        self.auto_reg_k_u = auto_reg_k_u
+        self.auto_reg_k_y = auto_reg_k_y
+        self.learnable_m_y = learnable_m_y
 
-    def forward(self, inputs, training=True):
+    def __call__(
+        self,
+        inputs: jax.Array,
+        is_training: bool = True,
+    ) -> jax.Array:
         """Forward pass of classification pipeline.
 
         Args:
@@ -176,19 +193,46 @@ class Architecture(nn.Module):
         Returns:
           Outputs of general architecture
         """
-        x = self.embeddings(inputs)
+        # Embedding layer.
+        x = hk.Linear(self.d_model)(inputs)
 
-        for layer in self.layers:
-            z = x  # Saving input to layer for residual.
-            x = F.layer_norm(x, normalized_shape=[x.size(-1)])
-            x = layer(x)
-            x = F.gelu(x)
-            if training:  # Use dropout during training.
-                x = self.dropout(x)
-            x += z  # Residual connection.
+        for _ in range(self.num_layers):
+            # Saving input to layer for residual.
+            z = x
 
-        # Projection.
-        x = torch.mean(x, dim=1)
-        x = self.final_layer(x)
+            # Construct pre-layer batch norm.
+            x = hk.BatchNorm(
+                create_offset=True,
+                create_scale=True,
+                decay_rate=0.9,
+                cross_replica_axis="i",
+            )(x, is_training=is_training)
+
+            x = STU(
+                d_out=self.d_model,
+                input_len=self.input_len,
+                num_eigh=self.num_eigh,
+                auto_reg_k_u=self.auto_reg_k_u,
+                auto_reg_k_y=self.auto_reg_k_y,
+                learnable_m_y=self.learnable_m_y,
+            )(x)
+
+            # GeLU + dropout.
+            x = jax.nn.gelu(x)
+            if is_training:
+                x = hk.dropout(hk.next_rng_key(), self.dropout, x)
+            x = hk.Linear(2 * self.d_model)(x)
+            x = jax.nn.glu(x)
+
+            # Dropout.
+            if is_training:
+                x = hk.dropout(hk.next_rng_key(), self.dropout, x)
+
+            # Residual connection.
+            x = x + z
+
+        # Projection
+        x = jnp.mean(x, axis=1, keepdims=True)
+        x = hk.Linear(self.d_target, w_init=None)(x)
 
         return x

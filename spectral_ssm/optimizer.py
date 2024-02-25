@@ -15,116 +15,86 @@
 
 """AdamW with linear warmup and cosine decay."""
 
-import jax
-import jax.numpy as jnp
-import optax
+import torch
+from torch.optim import AdamW
 from spectral_ssm import utils
+from torch.optim.lr_scheduler import LambdaLR
 
 
-class WarmupCosineDecay:
-  """Cosine decay with linear warmup."""
+class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
+    """Cosine decay with linear warmup."""
 
-  def __init__(
-      self,
-      start_val: float,
-      min_lr: float,
-      lr: float,
-      num_steps: int,
-      warmup_steps: int,
-  ) -> None:
-    """Initialize a cosine decay schedule with warmup.
+    def __init__(
+        self,
+        optimizer,
+        start_val,
+        min_lr,
+        lr,
+        num_steps,
+        warmup_steps,
+        last_epoch=-1,
+        verbose=False,
+    ):
+        """Initialize a cosine decay schedule with warmup.
+        Args:
+            start_val: The value to start at.
+            min_lr: The minimum value to decay to.
+            lr: The peak value to reach.
+            num_steps: The total number of steps to decay over.
+            warmup_steps: The number of steps to warmup for.
+        """
+        self.start_val = start_val
+        self.min_lr = min_lr
+        self.lr = lr
+        self.num_steps = num_steps
+        self.warmup_steps = warmup_steps
+        super().__init__(optimizer, last_epoch, verbose)
 
-    Args:
-      start_val: The value to start at.
-      min_lr: The minimum value to decay to.
-      lr: The peak value to reach.
-      num_steps: The total number of steps to decay over.
-      warmup_steps: The number of steps to warmup for.
-    """
-    self.start_val = start_val
-    self.min_lr = min_lr
-    self.lr = lr
-    self.num_steps = num_steps
-    self.warmup_steps = warmup_steps
+    def get_lr(self):
+        """
+        Get learning rate for a given step.
+        Args:
+            itr: The current step.
 
-  def __call__(self, itr) -> jax.Array:
-    """Get learning rate for a given step.
+        Returns:
+            The learning rate for the given step.
+        """
+        if self.last_epoch < self.warmup_steps:
+            warmup_factor = self.last_epoch / self.warmup_steps
+            return [
+                (self.start_val + warmup_factor * (self.lr - self.start_val))
+                for _ in self.base_lrs
+            ]
 
-    Args:
-      itr: The current step.
+        # Cosine annealing
+        cos_factor = 0.5 * (
+            1
+            + torch.cos(
+                torch.pi
+                * (self.last_epoch - self.warmup_steps)
+                / (self.num_steps - self.warmup_steps)
+            )
+        )
+        return [
+            (self.min_lr + (self.lr - self.min_lr) * cos_factor) for _ in self.base_lrs
+        ]
 
-    Returns:
-      The learning rate for the given step.
-    """
-    warmup_val = (self.lr - self.start_val) * (
-        itr / self.warmup_steps
-    ) + self.start_val
+def get_optimizer(model, num_steps=180_000, warmup_steps=18_000, learning_rate=5e-4, weight_decay=0.1, m_y_learning_rate=5e-5, m_y_weight_decay=0.0):
+    m_y_params = []
+    default_params = []
+    for name, param in model.named_parameters():
+        if name.startswith("m_y"):
+            m_y_params.append(param)
+        else:
+            default_params.append(param)
 
-    cos_itr = (itr - self.warmup_steps) / (self.num_steps - self.warmup_steps)
-    cos = 1 + jnp.cos(jnp.pi * cos_itr)
-    cos_val = 0.5 * (self.lr - self.min_lr) * cos + self.min_lr
+    param_groups = [
+        {"params": default_params, "lr": learning_rate, "weight_decay": weight_decay},
+        {"params": m_y_params, "lr": m_y_learning_rate, "weight_decay": m_y_weight_decay},
+    ]
 
-    # Select warmup_val if itr < warmup, else cosine val
-    values = jnp.array([warmup_val, cos_val])
-    index = jnp.sum(jnp.array(self.warmup_steps) < itr)
+    optimizer = AdamW(param_groups, betas=(0.9, 0.999), eps=1e-8)
 
-    return jnp.take(values, index)
+    scheduler = WarmupCosineDecay(optimizer, start_val=1e-7, min_lr=1e-7, lr=learning_rate, num_steps=num_steps, warmup_steps=warmup_steps)
 
-
-def get_optimizer(
-    num_steps: int = 180_000,
-    warmup_steps: int = 18_000,
-    learning_rate: float = 5e-4,
-    weight_decay: float = 0.1,
-    m_y_learning_rate: float = 5e-5,
-    m_y_weight_decay: float = 0.0,
-) -> optax.GradientTransformation:
-  """Build AdamW optimizer with linear warmup and cosine decay.
-
-  Args:
-    num_steps: The total number of steps to decay over.
-    warmup_steps: The number of steps to warmup for.
-    learning_rate: The peak learning rate.
-    weight_decay: The weight decay to use.
-    m_y_learning_rate: The peak learning rate for m_y parameters.
-    m_y_weight_decay: The weight decay to use for m_y parameters.
-
-  Returns:
-    An optax.GradientTransformation.
-  """
-  optimizers = {
-      'default': optax.adamw(
-          learning_rate=WarmupCosineDecay(
-              lr=learning_rate,
-              min_lr=1e-7,
-              start_val=1e-7,
-              num_steps=num_steps,
-              warmup_steps=warmup_steps,
-          ),
-          b1=0.9,
-          b2=0.999,
-          eps=1e-8,
-          eps_root=0.0,
-          weight_decay=weight_decay,
-      ),
-      'm_y': optax.adamw(
-          learning_rate=WarmupCosineDecay(
-              lr=m_y_learning_rate,
-              min_lr=1e-7,
-              start_val=1e-7,
-              num_steps=num_steps,
-              warmup_steps=warmup_steps,
-          ),
-          b1=0.9,
-          b2=0.999,
-          eps=1e-8,
-          eps_root=0.0,
-          weight_decay=m_y_weight_decay,
-      ),
-  }
-
-  label_fn = utils.map_nested_fn(
-      lambda k, _: 'm_y' if k.startswith('m_y') else 'default'
-  )
-
-  return optax.multi_transform(optimizers, label_fn)
+    return optimizer, scheduler

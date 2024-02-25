@@ -5,6 +5,8 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+spectral_ssm.egg-info/
+data/
 build/
 develop-eggs/
 dist/

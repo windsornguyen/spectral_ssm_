@@ -13,9 +13,4 @@
 # limitations under the License.
 # ==============================================================================
 
-"""Spectral temporal unit (STU) block."""
-
-import torch
-from spectral_ssm import torch_stu_utils
-
-# TODO: Implement me!
+"""Spectral SSM, JAX version. """

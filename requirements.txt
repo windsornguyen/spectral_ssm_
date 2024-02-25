@@ -1,9 +1,5 @@
 absl-py
-chex
-dm-haiku
-jax
-numpy
-optax
 tensorflow
 tensorflow-datasets
+torch
 tqdm
