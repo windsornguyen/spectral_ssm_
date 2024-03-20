@@ -13,10 +13,6 @@ python = ">=3.10,<3.12"
 torch = "^2.2.1"
 torchvision = "^0.17.1"
 tqdm = "^4.66.2"
-absl-py = "^2.1.0"
-dm-haiku = "^0.0.12"
-tensorflow = "^2.15.0.post1"
-tensorflow-datasets = "^4.9.4"
 
 [tool.poetry.dev-dependencies]
 # See `ruff help` for more on Ruff's top-level commands.

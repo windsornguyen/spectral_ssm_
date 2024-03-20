@@ -15,6 +15,9 @@ spectral_ssm/
 # Dataset
 data/
 
+# Checkpoints
+checkpoint.pt
+
 # Distribution / packaging
 .Python
 build/

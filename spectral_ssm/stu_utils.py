@@ -1,31 +1,15 @@
-# Copyright 2024 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# =============================================================================#
+# Authors: Windsor Nguyen, Dwaipayan Saha
+# File: stu_utils.py
+# =============================================================================#
 
 """Utilities for spectral SSM."""
 
-import functools
-
-import haiku as hk
-import jax
-import jax.numpy as jnp
-import numpy as np
+import torch
+import torch.nn.functional as F
 
 
-def get_hankel_matrix(
-    n: int,
-) -> np.ndarray:
+def get_hankel_matrix(n: int) -> torch.Tensor:
     """Generate a spectral Hankel matrix.
 
     Args:
@@ -34,17 +18,15 @@ def get_hankel_matrix(
     Returns:
       A spectral Hankel matrix of shape [n, n].
     """
-    z = np.zeros((n, n))
-    for i in range(1, n + 1):
-        for j in range(1, n + 1):
-            z[i - 1, j - 1] = 2 / ((i + j) ** 3 - (i + j))
-    return z
+    row_indices = torch.arange(1, n + 1).unsqueeze(0)
+    column_indices = torch.arange(1, n + 1).unsqueeze(1)
+    return 2 / ((row_indices + column_indices) ** 3 - (row_indices + column_indices))
 
 
 def get_top_hankel_eigh(
     n: int,
     k: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
 
     Args:
@@ -54,16 +36,18 @@ def get_top_hankel_eigh(
     Returns:
       A tuple of eigenvalues of shape [k,] and eigenvectors of shape [l, k].
     """
-    eig_vals, eig_vecs = np.linalg.eigh(get_hankel_matrix(n))
-    return eig_vals[-k:], eig_vecs[:, -k:]
+    hankel = get_hankel_matrix(n)
+    eig_vals, eig_vecs = torch.linalg.eigh(hankel)
+    top_k = torch.argsort(torch.abs(eig_vals)[-k:])
+    return eig_vals[top_k], eig_vecs[:, top_k]
 
 
 def get_random_real_matrix(
-    shape: tuple[int, ...],
+    shape: list[int],
     scaling: float,
     lower: float = -2.0,
     upper: float = 2.0,
-) -> jax.Array:
+) -> torch.Tensor:
     """Generate a random real matrix.
 
     Args:
@@ -75,138 +59,161 @@ def get_random_real_matrix(
     Returns:
       A random real matrix.
     """
-    return scaling * jax.random.truncated_normal(
-        hk.next_rng_key(), lower, upper, shape=shape
-    )
+    random = torch.randn(shape)
+    random_bounded = torch.clamp(random, min=lower, max=upper)
+    return scaling * random_bounded
 
-
-@jax.jit
+@torch.jit.script
 def shift(
-    x: jnp.ndarray,
-) -> jnp.ndarray:
-    """Shift time axis by one to align x_{t-1} and x_t.
+    x: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Shift time axis by one to align x_{t-1} and x_t.
 
     Args:
-      x: An array of shape [l, d].
+      x: A tensor of shape [l, d].
 
     Returns:
-      An array of shape [l, d] where index [0, :] is all zeros and [i, :] is equal
+      A tensor of shape [l, d] where index [0, :] is all zeros and [i, :] is equal
       to x[i - 1, :] for i > 0.
     """
-    return jnp.pad(x, ((1, 0), (0, 0)), mode='constant')[:-1, :]
+    # Pad the tensor with one row of zeros at the beginning
+    padded = F.pad(x, (0, 0, 1, 0), 'constant', 0.0)
+    # Remove the last row to maintain the original shape
+    shifted = padded[:-1, :]
+    return shifted
 
 
-@jax.jit
-def conv(
-    v: jnp.ndarray,
-    u: jnp.ndarray,
-) -> jnp.ndarray:
-    """Compute convolution to project input sequences into the spectral basis.
+def tr_conv(x, y):
+    """
+    Perform truncated convolution using FFT.
 
     Args:
-      v: Top k eigenvectors of shape [l, k].
-      u: Input of shape [l, d_in].
+        x (torch.Tensor): Tensor of shape [l,].
+        y (torch.Tensor): Tensor of shape [l,].
 
     Returns:
-      A matrix of shape [l, k, d_in]
+        torch.Tensor: Convolution result of shape [l,].
     """
-    # Convolve two vectors of length l (x.shape[0]) and truncate to the l oldest
-    # values.
-    tr_conv = lambda x, y: jax.scipy.signal.convolve(x, y, method='fft')[: x.shape[0]]
+    print(f'pre transform tr_conv - x shape={x.shape}, y shape={y.shape}')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    n = x.shape[0]
+    fft_x = torch.fft.rfft(x, n=n).to(device)
+    fft_y = torch.fft.rfft(y, n=n).to(device)
+    prod = fft_x * fft_y
+
+    print(
+        f'tr_conv - After FFT, fft_x shape: {fft_x.shape}, fft_y shape: {fft_y.shape}'
+    )
+
+    result = torch.fft.irfft(prod)
+    print(f'tr_conv - After FFT, result shape: {result.shape}')
+
+    # Truncate to the original size
+    return result[: x.shape[0]]
+
+def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+    """
+    Compute convolution to project input sequences into the spectral basis.
+
+    Args:
+        v: Top k eigenvectors of shape [l, k].
+        u: Input of shape [l, d_in].
+
+    Returns:
+        A matrix of shape [l, k, d_in].
+    """
+    # Debugging prints for initial shapes
+    print(f'conv - Initial v shape: {v.shape}, conv - Initial u shape: {u.shape}')
 
     # Convolve each sequence of length l in v with each sequence in u.
-    mvconv = jax.vmap(tr_conv, in_axes=(1, None), out_axes=1)
-    mmconv = jax.vmap(mvconv, in_axes=(None, 1), out_axes=-1)
+    mvconv = torch.vmap(tr_conv, in_dims=(1, None), out_dims=1)
+    mmconv = torch.vmap(mvconv, in_dims=(None, 1), out_dims=-1)
 
-    return mmconv(v, u)
+    result = mmconv(v, u)
 
+    print(f'conv - Final result shape: {result.shape}')
 
-@jax.jit
+    return result
+
+@torch.jit.script
 def compute_y_t(
-    m_y: jnp.ndarray,
-    deltas: jnp.ndarray,
-) -> jnp.ndarray:
+    m_y: torch.Tensor,
+    deltas: torch.Tensor,
+) -> torch.Tensor:
     """Compute sequence of y_t given a series of deltas and m_y via a simple scan.
 
     Args:
-      m_y: A matrix of shape [d_out, k, d_out] that acts as windowed transition
-        matrix for the linear dynamical system evolving y_t.
-      deltas: A matrix of shape [l, d_out].
+        m_y: A matrix of shape [d_out, k, d_out] that acts as windowed transition
+             matrix for the linear dynamical system evolving y_t.
+        deltas: A matrix of shape [l, d_out].
 
     Returns:
-      A matrix of shape [l, d_out].
+        A matrix of shape [l, d_out].
     """
     d_out, k, _ = m_y.shape
+    carry = torch.zeros((k, d_out), device=deltas.device)
+    ys = []
 
-    def scan_op(carry, x):
-      print("m_y shape:", m_y.shape)
-      print("carry shape:", carry.shape)
-      print("x shape:", x.shape)
-      output = jnp.tensordot(m_y, carry, axes=2) + x
-      carry = jnp.roll(carry, 1, axis=0)
-      carry = carry.at[0].set(output)
-      print("output shape:", output.shape)
-      return carry, output
+    for x in deltas:
+        output = torch.tensordot(m_y, carry, dims=2) + x
+        carry = torch.roll(carry, 1, dims=0)
+        # Avoid in-place operation by reconstructing the carry tensor
+        carry = torch.cat((output.unsqueeze(0), carry[:-1]), dim=0)
+        ys.append(output.unsqueeze(0))
 
-    _, ys = jax.lax.scan(scan_op, jnp.zeros((k, d_out)), deltas)
+    ys = torch.cat(ys, dim=0)
 
     return ys
 
-
-@jax.jit
+@torch.jit.script
 def compute_ar_x_preds(
-    w: jnp.ndarray,
-    x: jnp.ndarray,
-) -> jnp.ndarray:
+    w: torch.Tensor,
+    x: torch.Tensor,
+) -> torch.Tensor:
     """Compute the auto-regressive component of spectral SSM.
 
     Args:
       w: An array of shape [d_out, d_in, k].
-      x: A single input sequence of shape [l, d_in].
+      x: A single input sequence of shape [len, d_in].
 
     Returns:
-      ar_x_preds: An output of shape [l, d_out].
+      ar_x_preds: An output of shape [len, d_out].
     """
     d_out, _, k = w.shape
-    l = x.shape[0]
-
+    len = x.shape[0]
+    print(f'w shape: {w.shape}, x shape: {x.shape}')
     # Contract over `d_in`.
-    o = jnp.einsum('oik,li->klo', w, x)
+    o = torch.einsum('oik,li->klo', w, x)
 
     # For each `i` in `k`, roll the `(l, d_out)` by `i` steps.
-    o = jax.vmap(functools.partial(jnp.roll, axis=0))(o, jnp.arange(k))
+    o = torch.stack([torch.roll(o[i], shifts=i, dims=0) for i in range(k)])
 
     # Create a mask that zeros out nothing at `k=0`, the first `(l, d_out)` at
     # `k=1`, the first two `(l, dout)`s at `k=2`, etc.
-    m = jnp.triu(jnp.ones((k, l)))
-    m = jnp.expand_dims(m, axis=-1)
-    m = jnp.tile(m, (1, 1, d_out))
 
-    # Mask and sum along `k`.
-    return jnp.sum(o * m, axis=0)
+    m = torch.triu(torch.ones((k, len), device=w.device))
+    m = m.unsqueeze(-1).expand(-1, -1, d_out)
+    return torch.sum(o * m, dim=0)
 
-
-@jax.jit
 def compute_x_tilde(
-    inputs: jnp.ndarray,
-    eigh: tuple[jnp.ndarray, jnp.ndarray],
-) -> jnp.ndarray:
-    """Project input sequence into spectral basis.
-
-    Args:
-      inputs: A single input sequence of shape [l, d_in].
-      eigh: A tuple of eigenvalues [k] and circulant eigenvecs [k, l, l].
-
-    Returns:
-      x_tilde: An output of shape [l, k * d_in].
-    """
+    inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
+) -> torch.Tensor:
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     eig_vals, eig_vecs = eigh
+    eig_vals = eig_vals.to(device)
+    eig_vecs = eig_vecs.to(device)
+    inputs = inputs.to(device)
+    len = inputs.shape[0]
+    print(f'Our inputs shape: {inputs.shape}')
+    print(f'Eigenvalue shape: {eig_vals.shape}, eigenvec shape: {eig_vecs.shape}')
 
-    l = inputs.shape[0]
+    print(f'Inputs shape before conv: {inputs.shape}')
     x_tilde = conv(eig_vecs, inputs)
+    print(f'x_tilde shape after conv: {x_tilde.shape}')
 
-    # Broadcast an element-wise multiple along the k-sized axis.
-    x_tilde *= jnp.expand_dims(eig_vals, axis=(0, 2)) ** 0.25
+    x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals, 0), -1) ** 0.25
+    print(f'x_tilde shape after multiplication: {x_tilde.shape}')
 
     # This shift is introduced as the rest is handled by the AR part.
-    return shift(shift(x_tilde.reshape((l, -1))))
+    return shift(shift(x_tilde.reshape((len, -1))))
