@@ -146,7 +146,7 @@ class Architecture(nn.Module):
         x = self.embedding(x)
         print(f'Embedding output shape: {x.shape}')
         if torch.isnan(x).any():
-            print("NaN detected after Embedding")
+            print('NaN detected after Embedding')
 
         for i in range(self.num_layers):
             z = x  # Saving input to layer for residual.
@@ -156,13 +156,13 @@ class Architecture(nn.Module):
             print(f'x after batch norm layer {i}: {x}')
             print(f'After BatchNorm shape: {x.shape}')
             if torch.isnan(x).any():
-                print(f"NaN detected after BatchNorm {i}")
+                print(f'NaN detected after BatchNorm {i}')
 
             print(f'Before STU Layer {i} shape: {x.shape}')
             x = self.layers[i][0](x)
             print(f'After STU Layer {i} shape: {x.shape}')
             if torch.isnan(x).any():
-                print(f"NaN detected after STU Layer {i}")
+                print(f'NaN detected after STU Layer {i}')
 
             x = F.gelu(x)
             if is_training:
@@ -171,7 +171,7 @@ class Architecture(nn.Module):
             x = self.layers[i][1](x)
             x = F.glu(x, dim=-1)
             if torch.isnan(x).any():
-                print(f"NaN detected after Linear Layer in Layer {i}")
+                print(f'NaN detected after Linear Layer in Layer {i}')
 
             if is_training:
                 x = F.dropout(x, p=self.dropout, training=is_training)
@@ -181,5 +181,5 @@ class Architecture(nn.Module):
         x = torch.mean(x, dim=1)
         x = self.projection(x)
         if torch.isnan(x).any():
-            print("NaN detected after Projection")
+            print('NaN detected after Projection')
         return x

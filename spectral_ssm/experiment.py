@@ -93,9 +93,9 @@ class Experiment:
         loss, metrics = self.loss_fn(outputs, targets)
         print(f'Loss: {loss.item()}')
         loss.backward()
-        print(f'Gradients computed')
+        print('Gradients computed')
         self.optimizer.step()
-        print(f'Optimizer step completed')
+        print('Optimizer step completed')
         accuracy = 100.0 * metrics['correct'] / metrics['count']
         metrics['accuracy'] = accuracy
 

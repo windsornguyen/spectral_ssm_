@@ -38,8 +38,9 @@ def get_top_hankel_eigh(
     """
     hankel = get_hankel_matrix(n)
     eig_vals, eig_vecs = torch.linalg.eigh(hankel)
-    top_k = torch.argsort(torch.abs(eig_vals)[-k:])
-    return eig_vals[top_k], eig_vecs[:, top_k]
+    top_k_eig_vals = eig_vals[..., -k:]
+    top_k_eig_vecs = eig_vecs[..., -k:]
+    return top_k_eig_vals, top_k_eig_vecs
 
 
 def get_random_real_matrix(
