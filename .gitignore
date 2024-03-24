@@ -15,8 +15,9 @@ spectral_ssm/
 # Dataset
 data/
 
-# Checkpoints
+# Training
 checkpoint.pt
+training_details.txt
 
 # Distribution / packaging
 .Python

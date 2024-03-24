@@ -6,9 +6,9 @@
 """Example training loop."""
 
 import argparse
-import datetime
 import torch
 import torch.distributed as dist
+from datetime import datetime
 from spectral_ssm import cifar10
 from spectral_ssm import experiment
 from spectral_ssm import model
@@ -49,16 +49,16 @@ def main() -> None:
     print(f'Running on rank {rank}/{world_size}, device: {device}')
 
     # Hyperparameters
-    train_batch_size: int = 17
-    eval_batch_size: int = 16
-    num_steps: int = 2
-    eval_period: int = 1
-    warmup_steps: int = 1
+    train_batch_size: int = 49
+    eval_batch_size: int = 48
+    num_steps: int = 180_000
+    eval_period: int = 1_000
+    warmup_steps: int = 18_000
     learning_rate: float = 5e-4
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
     m_y_weight_decay: float = 0
-    patience: int = 3
+    patience: int = 20
     checkpoint_path: str = 'checkpoint.pt'
 
     # Define the model
@@ -67,7 +67,7 @@ def main() -> None:
         d_target=10,
         num_layers=6,
         dropout=0.1,  # TODO: Update Dropout usage to be more PyTorch-idiomatic.
-        input_len=1024,
+        input_len=32 * 32,
         num_eigh=24,
         auto_reg_k_u=3,
         auto_reg_k_y=2,
@@ -136,7 +136,7 @@ def main() -> None:
 
     # Print detailed information about the best model
     print('\nTraining completed. Best model information:')
-    print(f'Best model step: {best_model_step}')
+    print(f'Best model at step {best_model_step}')
     print(f'Best model validation loss: {best_val_loss:.2f}')
     print(f'Best model validation accuracy: {best_model_metrics["accuracy"]:.2f}')
     print(f'Best model checkpoint saved at: {checkpoint_path}')
