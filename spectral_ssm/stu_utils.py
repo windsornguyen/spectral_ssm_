@@ -8,7 +8,7 @@
 import torch
 import torch.nn.functional as F
 
-
+@torch.jit.script
 def get_hankel_matrix(n: int) -> torch.Tensor:
     """Generate a spectral Hankel matrix.
 
@@ -22,7 +22,7 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
     column_indices = torch.arange(1, n + 1).unsqueeze(1)
     return 2 / ((row_indices + column_indices) ** 3 - (row_indices + column_indices))
 
-
+@torch.jit.script
 def get_top_hankel_eigh(
     n: int,
     k: int,
@@ -42,7 +42,7 @@ def get_top_hankel_eigh(
     top_k_eig_vecs = eig_vecs[..., -k:]
     return top_k_eig_vals, top_k_eig_vecs
 
-
+@torch.jit.script
 def get_random_real_matrix(
     shape: list[int],
     scaling: float,
@@ -64,7 +64,7 @@ def get_random_real_matrix(
     random_bounded = torch.clamp(random, min=lower, max=upper)
     return scaling * random_bounded
 
-
+@torch.jit.script
 def shift(
     x: torch.Tensor,
 ) -> torch.Tensor:
@@ -85,6 +85,7 @@ def shift(
     return shifted
 
 
+@torch.jit.script
 def tr_conv(v, u):
     """
     Perform truncated convolution using FFT.
@@ -96,20 +97,13 @@ def tr_conv(v, u):
     Returns:
         torch.Tensor: Convolution result of shape [l,].
     """
-    print(f'pre transform tr_conv - v shape={v.shape}, u shape={u.shape}')
+    # Convolve two vectors of length l (x.shape[0])
     v_fft = torch.fft.rfft(v, dim=0)
     u_fft = torch.fft.rfft(u, dim=0)
     output_fft = v_fft * u_fft
 
-    print(
-        f'tr_conv - After FFT, v_fft shape: {v_fft.shape}, u_fft shape: {u_fft.shape}'
-    )
-
-    result = torch.fft.irfft(output_fft, n=v.size(0), dim=0)
-    print(f'tr_conv - After FFT, result shape: {result.shape}')
-
-    # Truncate to the original size
-    return result
+    # Truncate to the l oldest values.
+    return torch.fft.irfft(output_fft, n=v.size(0), dim=0)[: v.size(0)]
 
 
 def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
@@ -123,18 +117,13 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     Returns:
         A matrix of shape [l, k, d_in].
     """
-    # Debugging prints for initial shapes
-    print(f'conv - Initial v shape: {v.shape}, conv - Initial u shape: {u.shape}')
 
     # Convolve each sequence of length l in v with each sequence in u.
     mvconv = torch.vmap(tr_conv, in_dims=(1, None), out_dims=1)
     mmconv = torch.vmap(mvconv, in_dims=(None, 1), out_dims=-1)
-    result = mmconv(v, u)
+    return mmconv(v, u)
 
-    print(f'conv - Final result shape: {result.shape}')
-    return result
-
-
+@torch.jit.script
 def compute_y_t(
     m_y: torch.Tensor,
     deltas: torch.Tensor,
@@ -164,7 +153,7 @@ def compute_y_t(
 
     return ys
 
-
+@torch.jit.script
 def compute_ar_x_preds(
     w: torch.Tensor,
     x: torch.Tensor,
@@ -173,27 +162,27 @@ def compute_ar_x_preds(
 
     Args:
       w: An array of shape [d_out, d_in, k].
-      x: A single input sequence of shape [len, d_in].
+      x: A single input sequence of shape [seq_len, d_in].
 
     Returns:
-      ar_x_preds: An output of shape [len, d_out].
+      ar_x_preds: An output of shape [seq_len, d_out].
     """
     d_out, _, k = w.shape
-    len = x.shape[0]
-    print(f'w shape: {w.shape}, x shape: {x.shape}')
+    seq_len = x.shape[0]
+
     # Contract over `d_in`.
     o = torch.einsum('oik,li->klo', w, x)
 
-    # For each `i` in `k`, roll the `(l, d_out)` by `i` steps.
+    # For each `i` in `k`, roll the `(seq_len, d_out)` by `i` steps.
+    # TODO: See if this can be implemented using torch.vmap
     o = torch.stack([torch.roll(o[i], shifts=i, dims=0) for i in range(k)])
 
-    # Create a mask that zeros out nothing at `k=0`, the first `(l, d_out)` at
-    # `k=1`, the first two `(l, dout)`s at `k=2`, etc.
-
-    m = torch.triu(torch.ones((k, len), device=w.device))
-    m = m.unsqueeze(-1).expand(-1, -1, d_out)
+    # Create a mask that zeros out nothing at `k=0`, the first `(seq_len, d_out)` at
+    # `k=1`, the first two `(seq_len, dout)`s at `k=2`, etc.
+    m = torch.triu(torch.ones((k, seq_len, d_out), device=w.device))
+    
+    # Sum along `k`.
     return torch.sum(o * m, dim=0)
-
 
 def compute_x_tilde(
     inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
@@ -209,16 +198,11 @@ def compute_x_tilde(
     eig_vals = eig_vals.to(device)
     eig_vecs = eig_vecs.to(device)
     inputs = inputs.to(device)
-    len = inputs.shape[0]
-    print(f'Our inputs shape: {inputs.shape}')
-    print(f'Eigenvalue shape: {eig_vals.shape}, eigenvec shape: {eig_vecs.shape}')
-
-    print(f'Inputs shape before conv: {inputs.shape}')
+    seq_len = inputs.shape[0]
+    
     x_tilde = conv(eig_vecs, inputs)
-    print(f'x_tilde shape after conv: {x_tilde.shape}')
 
     x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals**0.25, 0), -1)
-    print(f'x_tilde shape after multiplication: {x_tilde.shape}')
 
     # This shift is introduced as the rest is handled by the AR part.
-    return shift(shift(x_tilde.reshape((len, -1))))
+    return shift(shift(x_tilde.reshape((seq_len, -1))))

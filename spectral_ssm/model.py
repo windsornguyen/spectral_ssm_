@@ -31,19 +31,13 @@ def apply_stu(
       A sequence of y_ts of shape [l, d_out].
     """
     m_y, m_u, m_phi = params
-    print(f'Input shape before compute_x_tilde: {inputs.shape}')
     x_tilde = stu_utils.compute_x_tilde(inputs, eigh)
-    print(f'x_tilde shape after compute_x_tilde: {x_tilde.shape}')
 
     # Compute deltas from the spectral filters, which are of shape [l, d_out].
     delta_phi = x_tilde @ m_phi
 
     # Compute deltas from AR on x part
     delta_ar_u = stu_utils.compute_ar_x_preds(m_u, inputs)
-
-    print(f'x_tilde shape after conv: {x_tilde.shape}')
-    print(f'delta_phi shape: {delta_phi.shape}')
-    print(f'delta_ar_u shape: {delta_ar_u.shape}')
 
     # Compute y_ts, which are of shape [l, d_out].
     return stu_utils.compute_y_t(m_y, delta_phi + delta_ar_u)
@@ -109,13 +103,41 @@ class STU(nn.Module):
           `torch.Tensor` of preactivations.
         """
 
-        print(f'Shape before operation X: {inputs.shape}')
         params = (self.m_y, self.m_u, self.m_phi)
         return apply_stu(params, inputs, self.eigh)
 
 
 class Architecture(nn.Module):
-    def __init__(self, d_model=256, d_target=10, num_layers=6, dropout=0.1, input_len=32*32, num_eigh=24, auto_reg_k_u=3, auto_reg_k_y=2, learnable_m_y=True):
+    """
+    General model architecture.
+    """
+
+    def __init__(
+        self,
+        d_model=256,
+        d_target=10,
+        num_layers=6,
+        dropout=0.1,
+        input_len=32 * 32,
+        num_eigh=24,
+        auto_reg_k_u=3,
+        auto_reg_k_y=2,
+        learnable_m_y=True,
+    ):
+        """
+        Initialize general model architecture.
+
+        Args:
+        d_model: Dimension of the embedding.
+        d_target: Dimension of the target.
+        num_layers: Number of layers.
+        dropout: Dropout rate.
+        input_len: Input sequence length.
+        num_eigh: Number of eigen values and vecs.
+        auto_reg_k_u: Auto-regressive depth on the input sequence.
+        auto_reg_k_y: Auto-regressive depth on the output sequence.
+        learnable_m_y: m_y matrix learnable.
+        """
         super(Architecture, self).__init__()
         self.d_model = d_model
         self.d_target = d_target
@@ -127,59 +149,65 @@ class Architecture(nn.Module):
         self.auto_reg_k_y = auto_reg_k_y
         self.learnable_m_y = learnable_m_y
         self.embedding = nn.Linear(3, d_model)
-        self.batch_norms = nn.ModuleList([nn.BatchNorm1d(d_model) for _ in range(num_layers)])
-        
-        self.layers = nn.ModuleList([
-            nn.Sequential(
-                STU(d_out=d_model, input_len=input_len, num_eigh=num_eigh, auto_reg_k_u=auto_reg_k_u, auto_reg_k_y=auto_reg_k_y, learnable_m_y=learnable_m_y),
-                nn.Linear(d_model, 2 * d_model),
-            ) for _ in range(num_layers)
-        ])
-        
+        self.batch_norms = nn.ModuleList(
+            [nn.BatchNorm1d(d_model) for _ in range(num_layers)]
+        )
+
+        self.layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    STU(
+                        d_out=d_model,
+                        input_len=input_len,
+                        num_eigh=num_eigh,
+                        auto_reg_k_u=auto_reg_k_u,
+                        auto_reg_k_y=auto_reg_k_y,
+                        learnable_m_y=learnable_m_y,
+                    ),
+                    nn.Linear(d_model, 2 * d_model),
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        # Final projection layer.
         self.projection = nn.Linear(d_model, d_target)
-        
+
     def forward(self, inputs, is_training=True):
         # Reshape input for embedding
         batch_size, channels, height, width = inputs.shape
         x = inputs.view(batch_size, channels, height * width).permute(0, 2, 1)
-        
+
+        # Embedding layer.
         x = self.embedding(x)
-        print(f'Embedding output shape: {x.shape}')
-        if torch.isnan(x).any():
-            print('NaN detected after Embedding')
 
         for i in range(self.num_layers):
-            z = x  # Saving input to layer for residual.
-
-            print(f'Before BatchNorm {i} shape: {x.shape}')
+            # Saving input to layer for residual.
+            z = x
+            
+            # Construct pre-layer batch norm.
             x = self.batch_norms[i](x.permute(0, 2, 1)).permute(0, 2, 1)
-            print(f'x after batch norm layer {i}: {x}')
-            print(f'After BatchNorm shape: {x.shape}')
-            if torch.isnan(x).any():
-                print(f'NaN detected after BatchNorm {i}')
 
-            print(f'Before STU Layer {i} shape: {x.shape}')
+            # Apply STU layer.
             x = self.layers[i][0](x)
-            print(f'After STU Layer {i} shape: {x.shape}')
-            if torch.isnan(x).any():
-                print(f'NaN detected after STU Layer {i}')
 
+            # GeLU + Dropout.
             x = F.gelu(x)
             if is_training:
                 x = F.dropout(x, p=self.dropout, training=is_training)
 
+            # Apply linear layer.
             x = self.layers[i][1](x)
             x = F.glu(x, dim=-1)
-            if torch.isnan(x).any():
-                print(f'NaN detected after Linear Layer in Layer {i}')
 
+            # Dropout.
             if is_training:
                 x = F.dropout(x, p=self.dropout, training=is_training)
 
-            x = x + z  # Residual connection.
+            # Residual connection.
+            x = x + z
 
+        # Projection.
         x = torch.mean(x, dim=1)
         x = self.projection(x)
-        if torch.isnan(x).any():
-            print('NaN detected after Projection')
         return x

@@ -38,8 +38,6 @@ def setup_distributed_env(local_rank: int):
 
 # TODO:
 # Add torch script decorators to (all) stu_utils.py functions
-# Expand cuda device code with MPS option as well
-# Fix nan training loss error
 def main():
     # Distributed training:
     # torchrun --nproc_per_node=1 example.py
@@ -60,7 +58,7 @@ def main():
     weight_decay = 1e-1
     m_y_learning_rate = 5e-5
     m_y_weight_decay = 0
-    patience = 5
+    patience = 3
     checkpoint_path = 'checkpoint.pt'
 
     # Define the model
