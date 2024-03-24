@@ -3,6 +3,21 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Virtual environments
+venv/
+.venv/
+deepmind/
+spectral_ssm/
+
+# Linter
+.ruff_cache/
+
+# Dataset
+data/
+
+# Checkpoints
+checkpoint.pt
+
 # Distribution / packaging
 .Python
 spectral_ssm.egg-info/

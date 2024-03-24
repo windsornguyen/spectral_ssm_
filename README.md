@@ -1,8 +1,12 @@
 # Spectral State Space Models
 
-This repository contains code for training and evaluating spectral state space
-models and accompanies the paper [Spectral State Space
+This repository contains a PyTorch implementation for training and evaluating the
+spectral state space models and accompanies the paper [Spectral State Space
 Models](https://arxiv.org/abs/2312.06837).
+
+The original JAX implementation was
+written by Daniel Suo and can be found in this
+[repository](https://github.com/google-deepmind/spectral_ssm).
 
 The paper studies sequence modeling for prediction tasks with long range
 dependencies. We propose a new formulation for state space models (SSMs) based
@@ -34,7 +38,7 @@ The `example.py` file contains the full training pipeline. `model.py` contains
 code for the model itself, including the Spectral Temporal Unit (STU) block.
 
 ```bash
-python3 example.py
+torchrun --nproc_per_node=1 example.py
 ```
 
 ## Citing this work

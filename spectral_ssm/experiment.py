@@ -1,17 +1,7 @@
-# Copyright 2024 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# ==============================================================================#
+# Authors: Windsor Nguyen, Dwaipayan Saha
+# File: experiment.py
+# ==============================================================================#
 
 """Utilities for running an experiment."""
 
@@ -22,11 +12,10 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 
-from spectral_ssm import utils  # Might delete that utility function?
-
-
 class Experiment:
-    """Class to initialize and maintain experiment state."""
+    """
+    Initializes and maintains the experiment state.
+    """
 
     def __init__(
         self,
@@ -44,12 +33,14 @@ class Experiment:
         """
         self.model = model
         self.optimizer = optimizer
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
         if torch.cuda.device_count() > 1:
-            model = nn.DataParallel(model)
+            self.model = nn.DataParallel(self.model)
 
-    def loss_fn(self, outputs, targets):
+    def loss_fn(
+        self, outputs: torch.Tensor, targets: torch.Tensor
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         """
         Computes the loss and metrics for a batch of data. (Right?)
 
@@ -61,11 +52,15 @@ class Experiment:
         Returns:
           A tuple of the loss and a dictionary of metrics.
         """
-        loss = F.cross_entropy(outputs, targets)
-        preds = torch.argmax(outputs, dim=1)
-        correct = torch.sum(preds == targets).item()
-        count = targets.size(0)
-        metrics = {"loss": loss.item(), "correct": correct, "count": count}
+        criterion = nn.CrossEntropyLoss(reduction='sum')
+        loss = criterion(outputs, targets)
+
+        probs = F.softmax(outputs, dim=-1)
+        preds = torch.argmax(probs, dim=-1)
+        correct = torch.sum((preds == targets).float())
+        count = targets.numel()
+
+        metrics = {'loss': loss.item(), 'correct': correct.item(), 'count': count}
         return loss, metrics
 
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
@@ -80,11 +75,15 @@ class Experiment:
           metrics: A dictionary of metrics including loss and accuracy.
         """
         inputs, targets = inputs.to(self.device), targets.to(self.device)
+
         self.optimizer.zero_grad()
         outputs = self.model(inputs)
         loss, metrics = self.loss_fn(outputs, targets)
         loss.backward()
         self.optimizer.step()
+        accuracy = 100.0 * metrics['correct'] / metrics['count']
+        metrics['accuracy'] = accuracy
+
         return metrics
 
     def evaluate(self, dataloader: DataLoader) -> dict[str, float]:
@@ -104,12 +103,13 @@ class Experiment:
             for inputs, targets in dataloader:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
-                _, batch_metrics = self.loss_fn(outputs, targets)
+                loss, batch_metrics = self.loss_fn(outputs, targets)
 
-                total_count += batch_metrics["count"]
-                total_loss += batch_metrics["loss"] * batch_metrics["count"]
-                total_correct += batch_metrics["correct"]
+                total_count += batch_metrics['count']
+                total_loss += loss.item() * batch_metrics['count']
+                total_correct += batch_metrics['correct']
 
         avg_loss = total_loss / total_count
         accuracy = 100.0 * total_correct / total_count
-        return {"count": total_count, "loss": avg_loss, "correct": accuracy}
+        self.model.train()
+        return {'count': total_count, 'loss': avg_loss, 'accuracy': accuracy}

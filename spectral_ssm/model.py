@@ -1,17 +1,7 @@
-# Copyright 2024 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# ==============================================================================#
+# Authors: Windsor Nguyen, Dwaipayan Saha
+# File: model.py
+# ==============================================================================#
 
 """Spectral temporal unit (STU) block."""
 
@@ -20,7 +10,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from spectral_ssm import stu_utils
 
+import functools
 
+
+@functools.partial(torch.vmap, in_dims=(None, 0, None))
 def apply_stu(
     params: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     inputs: torch.Tensor,
@@ -34,11 +27,10 @@ def apply_stu(
       inputs: Input matrix of shape [l, d_in].
       eigh: A tuple of eigenvalues [k] and circulant eigenvecs [k, l, l].
 
-      Returns:
-        A sequence of y_ts of shape [l, d_out].
+    Returns:
+      A sequence of y_ts of shape [l, d_out].
     """
     m_y, m_u, m_phi = params
-
     x_tilde = stu_utils.compute_x_tilde(inputs, eigh)
 
     # Compute deltas from the spectral filters, which are of shape [l, d_out].
@@ -57,7 +49,7 @@ class STU(nn.Module):
     def __init__(
         self,
         d_out: int = 256,
-        input_len: int = 1024,
+        input_len: int = 32 * 32,
         num_eigh: int = 24,
         auto_reg_k_u: int = 3,
         auto_reg_k_y: int = 2,
@@ -88,7 +80,7 @@ class STU(nn.Module):
             )
         else:
             self.register_buffer(
-                "m_y", torch.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
+                'm_y', torch.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
             )
 
         # NOTE: Assume d_in = d_out
@@ -116,79 +108,106 @@ class STU(nn.Module):
 
 
 class Architecture(nn.Module):
-    """General model architecture."""
+    """
+    General model architecture.
+    """
 
     def __init__(
         self,
-        name=None,
-        d_model: int = 256,
-        d_target: int = 10,
-        num_layers: int = 6,
-        dropout: float = 0.1,
-        input_len: int = 1024,
-        num_eigh: int = 24,
-        auto_reg_k_u: int = 3,
-        auto_reg_k_y: int = 2,
-        learnable_m_y: bool = True,
-    ) -> None:
-        """Initialize general model architecture.
+        d_model=256,
+        d_target=10,
+        num_layers=6,
+        dropout=0.1,
+        input_len=32 * 32,
+        num_eigh=24,
+        auto_reg_k_u=3,
+        auto_reg_k_y=2,
+        learnable_m_y=True,
+    ):
+        """
+        Initialize general model architecture.
 
         Args:
-          name: Name of the module.
-          d_model: Dimension of the embedding.
-          d_target: Dimension of the target.
-          num_layers: Number of layers.
-          dropout: Dropout rate.
-          input_len: Input sequence length.
-          num_eigh: Number of eigen values and vecs.
-          auto_reg_k_u: Auto-regressive depth on the input sequence,
-          auto_reg_k_y: Auto-regressive depth on the output sequence,
-          learnable_m_y: m_y matrix learnable,
+        d_model: Dimension of the embedding.
+        d_target: Dimension of the target.
+        num_layers: Number of layers.
+        dropout: Dropout rate.
+        input_len: Input sequence length.
+        num_eigh: Number of eigen values and vecs.
+        auto_reg_k_u: Auto-regressive depth on the input sequence.
+        auto_reg_k_y: Auto-regressive depth on the output sequence.
+        learnable_m_y: m_y matrix learnable.
         """
         super(Architecture, self).__init__()
         self.d_model = d_model
         self.d_target = d_target
         self.num_layers = num_layers
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = dropout
+        self.input_len = input_len
+        self.num_eigh = num_eigh
+        self.auto_reg_k_u = auto_reg_k_u
+        self.auto_reg_k_y = auto_reg_k_y
+        self.learnable_m_y = learnable_m_y
+        self.embedding = nn.Linear(3, d_model)
+        self.batch_norms = nn.ModuleList(
+            [nn.BatchNorm1d(d_model) for _ in range(num_layers)]
+        )
+
         self.layers = nn.ModuleList(
             [
-                STU(
-                    d_out=d_model,
-                    input_len=input_len,
-                    num_eigh=num_eigh,
-                    auto_reg_k_u=auto_reg_k_u,
-                    auto_reg_k_y=auto_reg_k_y,
-                    learnable_m_y=learnable_m_y,
+                nn.Sequential(
+                    STU(
+                        d_out=d_model,
+                        input_len=input_len,
+                        num_eigh=num_eigh,
+                        auto_reg_k_u=auto_reg_k_u,
+                        auto_reg_k_y=auto_reg_k_y,
+                        learnable_m_y=learnable_m_y,
+                    ),
+                    nn.Linear(d_model, 2 * d_model),
                 )
                 for _ in range(num_layers)
             ]
         )
-        self.embeddings = nn.Linear(d_model, d_model)
-        self.final_layer = nn.Linear(d_model, d_target)
 
-    def forward(self, inputs, training=True):
-        """Forward pass of classification pipeline.
+        # Final projection layer.
+        self.projection = nn.Linear(d_model, d_target)
 
-        Args:
-          inputs: (batch, length, source dim).
-          is_training: True for training mode.
+    def forward(self, inputs, is_training=True):
+        # Reshape input for embedding
+        batch_size, channels, height, width = inputs.shape
+        x = inputs.view(batch_size, channels, height * width).permute(0, 2, 1)
 
-        Returns:
-          Outputs of general architecture
-        """
-        x = self.embeddings(inputs)
+        # Embedding layer.
+        x = self.embedding(x)
 
-        for layer in self.layers:
-            z = x  # Saving input to layer for residual.
-            x = F.layer_norm(x, normalized_shape=[x.size(-1)])
-            x = layer(x)
+        for i in range(self.num_layers):
+            # Saving input to layer for residual.
+            z = x
+            
+            # Construct pre-layer batch norm.
+            x = self.batch_norms[i](x.permute(0, 2, 1)).permute(0, 2, 1)
+
+            # Apply STU layer.
+            x = self.layers[i][0](x)
+
+            # GeLU + Dropout.
             x = F.gelu(x)
-            if training:  # Use dropout during training.
-                x = self.dropout(x)
-            x += z  # Residual connection.
+            if is_training:
+                x = F.dropout(x, p=self.dropout, training=is_training)
+
+            # Apply linear layer.
+            x = self.layers[i][1](x)
+            x = F.glu(x, dim=-1)
+
+            # Dropout.
+            if is_training:
+                x = F.dropout(x, p=self.dropout, training=is_training)
+
+            # Residual connection.
+            x = x + z
 
         # Projection.
         x = torch.mean(x, dim=1)
-        x = self.final_layer(x)
-
+        x = self.projection(x)
         return x

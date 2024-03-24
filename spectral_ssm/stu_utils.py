@@ -1,23 +1,13 @@
-# Copyright 2024 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# =============================================================================#
+# Authors: Windsor Nguyen, Dwaipayan Saha, Evan Dogariu
+# File: stu_utils.py
+# =============================================================================#
 
 """Utilities for spectral SSM."""
 
 import torch
 
-
+# TODO: Look into accelerating these functions with @torch.jit.script
 
 def get_hankel_matrix(n: int) -> torch.Tensor:
     """Generate a spectral Hankel matrix.
@@ -33,7 +23,6 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
     return 2 / ((row_indices + column_indices) ** 3 - (row_indices + column_indices))
 
 
-
 def get_top_hankel_eigh(
     n: int,
     k: int,
@@ -45,13 +34,13 @@ def get_top_hankel_eigh(
       k: Number of eigenvalues to return.
 
     Returns:
-      A tuple of eigenvalues of shape [k,] and eigenvectors of shape [l, k].
+      A tuple of eigenvalues of shape [k,] and eigenvectors of shape [seq_len, k].
     """
     hankel = get_hankel_matrix(n)
     eig_vals, eig_vecs = torch.linalg.eigh(hankel)
-    top_k = torch.argsort(torch.abs(eig_vals)[-k:])
-    return eig_vals[top_k], eig_vecs[:, top_k]
-
+    top_k_eig_vals = eig_vals[..., -k:]
+    top_k_eig_vecs = eig_vecs[..., -k:]
+    return top_k_eig_vals, top_k_eig_vecs
 
 
 def get_random_real_matrix(
@@ -76,54 +65,62 @@ def get_random_real_matrix(
     return scaling * random_bounded
 
 
-
 def shift(
     x: torch.Tensor,
 ) -> torch.Tensor:
-    """Shift time axis by one to align x_{t-1} and x_t.
+    """
+    Shift time axis by one to align x_{t-1} and x_t.
 
     Args:
-      x: An array of shape [l, d].
+      x: A tensor of shape [seq_len, d].
 
     Returns:
-      An array of shape [l, d] where index [0, :] is all zeros and [i, :] is equal
+      A tensor of shape [seq_len, d] where index [0, :] is all zeros and [i, :] is equal
       to x[i - 1, :] for i > 0.
     """
-    return torch.cat([torch.zeros((1, x.shape[1]), device=x.device), x], dim=0)[:-1, :]
+    # Create a tensor of zeros with same shape as x
+    zeros = torch.zeros_like(x)
+    # Create new tensor with first row as zeros and the rest as x[:-1]
+    shifted = torch.cat((zeros[:1, :], x[:-1, :]), dim=0)
+    return shifted
 
 
-
-def truncate_conv(x, y):
-    return torch.fft.irfft(torch.fft.rfft(x) * torch.fft.rfft(y))[: x.shape[0]]
-  
-  
-
-def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
-    """Compute convolution to project input sequences into the spectral basis.
+def tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+    """
+    Perform truncated convolution using FFT.
 
     Args:
-        v: Top k eigenvectors of shape [l, k].
-        u: Input of shape [l, d_in].
+        v (torch.Tensor): Tensor of shape [seq_len,].
+        u (torch.Tensor): Tensor of shape [seq_len,].
 
     Returns:
-        A matrix of shape [l, k, d_in]
+        torch.Tensor: Convolution result of shape [seq_len,].
     """
-    # device = get_device()
-    # if v.device != device:
-    #     v = v.to(device)
-    # if u.device != device:
-    #     u = u.to(device)
+    # Convolve two vectors of length `seq_len` (x.shape[0])
+    v_fft = torch.fft.rfft(v, dim=0)
+    u_fft = torch.fft.rfft(u, dim=0)
+    output_fft = v_fft * u_fft
 
-    # Convolve two vectors of length l (x.shape[0]) and truncate to the l oldest
-    # values.
-    trconv = torch.vmap(truncate_conv, in_dims=(None, 1), out_dims=1)
+    # Truncate to the `seq_len` oldest values.
+    return torch.fft.irfft(output_fft, n=v.size(0), dim=0)[: v.size(0)]
 
-    # Convolve each sequence of length l in v with each sequence in u
-    mvconv = torch.vmap(trconv(v, u), in_dims=(1, None), out_dims=1)
+
+def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+    """
+    Compute convolution to project input sequences into the spectral basis.
+
+    Args:
+        v: Top k eigenvectors of shape [seq_len, k].
+        u: Input of shape [seq_len, d_in].
+
+    Returns:
+        A matrix of shape [seq_len, k, d_in].
+    """
+
+    # Convolve each sequence of length `seq_len` in v with each sequence in u.
+    mvconv = torch.vmap(tr_conv, in_dims=(1, None), out_dims=1)
     mmconv = torch.vmap(mvconv, in_dims=(None, 1), out_dims=-1)
-
     return mmconv(v, u)
-
 
 
 def compute_y_t(
@@ -133,25 +130,27 @@ def compute_y_t(
     """Compute sequence of y_t given a series of deltas and m_y via a simple scan.
 
     Args:
-      m_y: A matrix of shape [d_out, k, d_out] that acts as windowed transition
-        matrix for the linear dynamical system evolving y_t.
-      deltas: A matrix of shape [l, d_out].
+        m_y: A matrix of shape [d_out, k, d_out] that acts as windowed transition
+             matrix for the linear dynamical system evolving y_t.
+        deltas: A matrix of shape [seq_len, d_out].
 
     Returns:
-      A matrix of shape [l, d_out].
+        A matrix of shape [seq_len, d_out].
     """
     d_out, k, _ = m_y.shape
-    carry = torch.zeros((k, d_out))
-    ys = torch.empty((deltas.shape[0], k, d_out))
+    carry = torch.zeros((k, d_out), device=deltas.device)
+    ys = []
 
-    for i, x in enumerate(deltas):
+    for x in deltas:
         output = torch.tensordot(m_y, carry, dims=2) + x
-        carry = torch.roll(carry, shifts=1, dims=0)
-        carry[0] = output
-        ys[i] = output
+        carry = torch.roll(carry, 1, dims=0)
+        # Avoid in-place operation by reconstructing the carry tensor
+        carry = torch.cat((output.unsqueeze(0), carry[:-1]), dim=0)
+        ys.append(output.unsqueeze(0))
+
+    ys = torch.cat(ys, dim=0)
 
     return ys
-
 
 
 def compute_ar_x_preds(
@@ -162,54 +161,48 @@ def compute_ar_x_preds(
 
     Args:
       w: An array of shape [d_out, d_in, k].
-      x: A single input sequence of shape [len, d_in].
+      x: A single input sequence of shape [seq_len, d_in].
 
     Returns:
-      ar_x_preds: An output of shape [len, d_out].
+      ar_x_preds: An output of shape [seq_len, d_out].
     """
     d_out, _, k = w.shape
-    l = x.shape[0]
+    seq_len = x.shape[0]
 
     # Contract over `d_in`.
-    o = torch.einsum("oik,li->klo", w, x)
+    o = torch.einsum('oik,li->klo', w, x)
 
-    # For each `i` in `k`, roll the `(l, d_out)` by `i` steps.
-    def roll_func(tensor, shift):
-        return torch.roll(tensor, shift=shift, dims=0)
+    # For each `i` in `k`, roll the `(seq_len, d_out)` by `i` steps.
+    # TODO: See if this can be implemented using torch.vmap
+    o = torch.stack([torch.roll(o[i], shifts=i, dims=0) for i in range(k)])
 
-    o = torch.vmap(roll_func, in_dims=(0, 0))(tensor=o, shift=torch.arange(k))
+    # Create a mask that zeros out nothing at `k=0`, the first `(seq_len, d_out)` at
+    # `k=1`, the first two `(seq_len, dout)`s at `k=2`, etc.
+    m = torch.triu(torch.ones((k, seq_len, d_out), device=w.device))
 
-    # Create a mask that zeros out nothing at `k=0`, the first `(l, d_out)` at
-    # `k=1`, the first two `(l, dout)`s at `k=2`, etc.
-    m = torch.triu(torch.ones((k, l), device=w.device))
-    m = m.unsqueeze(-1)
-    m = m.expand(-1, -1, d_out)
-
-    # Mask and sum along `k`.
-    return torch.sum(o * m, axis=0)
-
+    # Sum along `k`.
+    return torch.sum(o * m, dim=0)
 
 
 def compute_x_tilde(
-    inputs: torch.Tensor,
-    eigh: tuple[torch.Tensor, torch.Tensor],
+    inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
 ) -> torch.Tensor:
-    """Project input sequence into spectral basis.
-
-    Args:
-      inputs: A single input sequence of shape [l, d_in].
-      eigh: A tuple of eigenvalues [k] and circulant eigenvecs [k, l, l].
-
-    Returns:
-      x_tilde: An output of shape [l, k * d_in].
-    """
+    device = torch.device(
+        'cuda'
+        if torch.cuda.is_available()
+        else 'mps'
+        if torch.backends.mps.is_available()
+        else 'cpu'
+    )
     eig_vals, eig_vecs = eigh
+    eig_vals = eig_vals.to(device)
+    eig_vecs = eig_vecs.to(device)
+    inputs = inputs.to(device)
+    seq_len = inputs.shape[0]
 
-    l = inputs.shape[0]
     x_tilde = conv(eig_vecs, inputs)
 
-    # Broadcast an element-wise multiple along the k-sized axis.
-    x_tilde *= torch.unsqueeze(eig_vals, axis=(0, 2)) ** 0.25
+    x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals**0.25, 0), -1)
 
     # This shift is introduced as the rest is handled by the AR part.
-    return shift(shift(x_tilde.reshape((l, -1))))
+    return shift(shift(x_tilde.reshape((seq_len, -1))))
