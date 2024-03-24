@@ -35,6 +35,7 @@ def setup_distributed_env(local_rank: int):
 
     return device, rank, world_size
 
+
 # TODO:
 # Add torch script decorators to (all) stu_utils.py functions
 # Expand cuda device code with MPS option as well
@@ -93,6 +94,7 @@ def main():
     best_val_loss = float('inf')
     epochs_without_improvement = 0
 
+    torch.autograd.set_detect_anomaly(True)
     pbar = tqdm(range(num_steps), desc='Training Progress')
     for global_step in pbar:
         inputs, targets = next(iter(training_loader))

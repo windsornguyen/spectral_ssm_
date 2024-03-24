@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 
 # from spectral_ssm import utils  # Might delete that utility function?
 
+
 class Experiment:
     """Class to initialize and maintain experiment state."""
 
@@ -51,8 +52,12 @@ class Experiment:
           A tuple of the loss and a dictionary of metrics.
         """
         criterion = nn.CrossEntropyLoss(reduction='sum')
-        print(f"outputs={outputs}, targets={targets}")
+
+        print(f'outputs={outputs}, targets={targets}')
+        print(f'Outputs shape: {outputs.shape}')
+        print(f'Targets shape: {targets.shape}')
         loss = criterion(outputs, targets)
+        print(f'Loss: {loss.item()}')
 
         probs = F.softmax(outputs, dim=-1)
         preds = torch.argmax(probs, dim=-1)
@@ -78,14 +83,19 @@ class Experiment:
             f'Experiment step/evaluate - Inputs: {inputs.shape}, Targets: {targets.shape}'
         )
         inputs, targets = inputs.to(self.device), targets.to(self.device)
+        print(f'Inputs device: {inputs.device}')
+        print(f'Targets device: {targets.device}')
 
         self.optimizer.zero_grad()
         outputs = self.model(inputs)
-        print(f"Outputs shape: {outputs.shape}")
-        print(f"Targets shape: {targets.shape}")
+        print(f'Model outputs shape: {outputs.shape}')
+        print(f'Forward pass completed: {outputs}')
         loss, metrics = self.loss_fn(outputs, targets)
+        print(f'Loss: {loss.item()}')
         loss.backward()
+        print(f'Gradients computed')
         self.optimizer.step()
+        print(f'Optimizer step completed')
         accuracy = 100.0 * metrics['correct'] / metrics['count']
         metrics['accuracy'] = accuracy
 

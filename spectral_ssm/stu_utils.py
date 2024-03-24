@@ -63,7 +63,7 @@ def get_random_real_matrix(
     random_bounded = torch.clamp(random, min=lower, max=upper)
     return scaling * random_bounded
 
-@torch.jit.script
+
 def shift(
     x: torch.Tensor,
 ) -> torch.Tensor:
@@ -84,33 +84,32 @@ def shift(
     return shifted
 
 
-def tr_conv(x, y):
+def tr_conv(v, u):
     """
     Perform truncated convolution using FFT.
 
     Args:
-        x (torch.Tensor): Tensor of shape [l,].
-        y (torch.Tensor): Tensor of shape [l,].
+        v (torch.Tensor): Tensor of shape [l,].
+        u (torch.Tensor): Tensor of shape [l,].
 
     Returns:
         torch.Tensor: Convolution result of shape [l,].
     """
-    print(f'pre transform tr_conv - x shape={x.shape}, y shape={y.shape}')
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    n = x.shape[0]
-    fft_x = torch.fft.rfft(x, n=n).to(device)
-    fft_y = torch.fft.rfft(y, n=n).to(device)
-    prod = fft_x * fft_y
+    print(f'pre transform tr_conv - v shape={v.shape}, u shape={u.shape}')
+    v_fft = torch.fft.rfft(v, dim=0)
+    u_fft = torch.fft.rfft(u, dim=0)
+    output_fft = v_fft * u_fft
 
     print(
-        f'tr_conv - After FFT, fft_x shape: {fft_x.shape}, fft_y shape: {fft_y.shape}'
+        f'tr_conv - After FFT, v_fft shape: {v_fft.shape}, u_fft shape: {u_fft.shape}'
     )
 
-    result = torch.fft.irfft(prod)
+    result = torch.fft.irfft(output_fft, n=v.size(0), dim=0)
     print(f'tr_conv - After FFT, result shape: {result.shape}')
 
     # Truncate to the original size
-    return result[: x.shape[0]]
+    return result
+
 
 def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     """
@@ -129,14 +128,12 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     # Convolve each sequence of length l in v with each sequence in u.
     mvconv = torch.vmap(tr_conv, in_dims=(1, None), out_dims=1)
     mmconv = torch.vmap(mvconv, in_dims=(None, 1), out_dims=-1)
-
     result = mmconv(v, u)
 
     print(f'conv - Final result shape: {result.shape}')
-
     return result
 
-@torch.jit.script
+
 def compute_y_t(
     m_y: torch.Tensor,
     deltas: torch.Tensor,
@@ -166,7 +163,7 @@ def compute_y_t(
 
     return ys
 
-@torch.jit.script
+
 def compute_ar_x_preds(
     w: torch.Tensor,
     x: torch.Tensor,
@@ -196,10 +193,17 @@ def compute_ar_x_preds(
     m = m.unsqueeze(-1).expand(-1, -1, d_out)
     return torch.sum(o * m, dim=0)
 
+
 def compute_x_tilde(
     inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
 ) -> torch.Tensor:
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(
+        'cuda'
+        if torch.cuda.is_available()
+        else 'mps'
+        if torch.backends.mps.is_available()
+        else 'cpu'
+    )
     eig_vals, eig_vecs = eigh
     eig_vals = eig_vals.to(device)
     eig_vecs = eig_vecs.to(device)
@@ -212,7 +216,7 @@ def compute_x_tilde(
     x_tilde = conv(eig_vecs, inputs)
     print(f'x_tilde shape after conv: {x_tilde.shape}')
 
-    x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals, 0), -1) ** 0.25
+    x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals**0.25, 0), -1)
     print(f'x_tilde shape after multiplication: {x_tilde.shape}')
 
     # This shift is introduced as the rest is handled by the AR part.
