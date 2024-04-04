@@ -8,7 +8,6 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 
 class Experiment:
@@ -109,9 +108,7 @@ class Experiment:
         total_samples = 0
 
         with torch.no_grad():
-            for inputs, targets in tqdm(
-                dataloader, desc='Evaluating the model...', unit='batch'
-            ):
+            for inputs, targets in dataloader:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
                 loss, metrics = self.loss_fn(outputs, targets)

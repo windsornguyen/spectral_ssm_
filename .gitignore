@@ -14,6 +14,7 @@ ssm_env/
 .ruff_cache/
 
 # Training artifacts
+checkpoints/
 checkpoint.pt
 training_details.txt
 
