@@ -20,19 +20,18 @@ def setup_distributed_env(local_rank: int) -> tuple[torch.device, int, int]:
     """
     Sets up the distributed training environment for both GPU and CPU.
     """
+    device = torch.device('cpu')
+    backend = 'gloo'
+
     if torch.cuda.is_available():
-        # Setup for GPU-based distributed training
         torch.cuda.set_device(local_rank)
         device = torch.device(f'cuda:{local_rank}')
-    else:
-        # Setup for CPU-based distributed training
-        device = torch.device('cpu')
+        backend = 'nccl'
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+        backend = 'gloo'
 
-    # Initialize the process group for both GPU and CPU
-    backend = 'nccl' if torch.cuda.is_available() else 'gloo'
     dist.init_process_group(backend=backend, init_method='env://')
-
-    # Regardless of GPU or CPU, obtain rank and world size
     rank = dist.get_rank()
     world_size = dist.get_world_size()
 
@@ -51,14 +50,14 @@ def main() -> None:
     # Hyperparameters
     train_batch_size: int = 49
     eval_batch_size: int = 48
-    num_steps: int = 180_000
-    eval_period: int = 1_000
-    warmup_steps: int = 18_000
+    num_steps: int = 100
+    eval_period: int = 3
+    warmup_steps: int = 10
     learning_rate: float = 5e-4
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
     m_y_weight_decay: float = 0
-    patience: int = 20
+    patience: int = 15
     checkpoint_path: str = 'checkpoint.pt'
 
     # Define the model
@@ -66,7 +65,7 @@ def main() -> None:
         d_model=256,
         d_target=10,
         num_layers=6,
-        dropout=0.1,  # TODO: Update Dropout usage to be more PyTorch-idiomatic.
+        dropout=0.1,
         input_len=32 * 32,
         num_eigh=24,
         auto_reg_k_u=3,
@@ -84,7 +83,7 @@ def main() -> None:
         m_y_weight_decay=m_y_weight_decay,
     )
 
-    exp = experiment.Experiment(model=spectral_ssm, optimizer=opt)
+    exp = experiment.Experiment(model=spectral_ssm, optimizer=opt, device=device)
 
     train_loader = cifar10.get_dataset('train', batch_size=train_batch_size)
     eval_loader = cifar10.get_dataset('test', batch_size=eval_batch_size)
@@ -102,7 +101,7 @@ def main() -> None:
         train_metrics = exp.step(inputs, targets)
         pbar.set_postfix(
             {
-                'train_acc': f'{train_metrics["accuracy"]:.2f}',
+                'train_acc': f'{train_metrics["accuracy"]:.2f}%',
                 'train_loss': f'{train_metrics["loss"]:.2f}',
                 'lr': scheduler.get_last_lr()[0],
             }
@@ -112,7 +111,7 @@ def main() -> None:
         if global_step > 0 and global_step % eval_period == 0:
             epoch_metrics = exp.evaluate(eval_loader)
             print(
-                f'\nEval {global_step}: acc: {epoch_metrics["accuracy"]:.2f}, loss: {epoch_metrics["loss"]:.2f}'
+                f'\nEval on step {global_step}: acc: {epoch_metrics["accuracy"]:.2f}%, loss: {epoch_metrics["loss"]:.2f}'
             )
             val_loss = epoch_metrics['loss']
             if val_loss < best_val_loss:
@@ -138,7 +137,7 @@ def main() -> None:
     print('\nTraining completed. Best model information:')
     print(f'Best model at step {best_model_step}')
     print(f'Best model validation loss: {best_val_loss:.2f}')
-    print(f'Best model validation accuracy: {best_model_metrics["accuracy"]:.2f}')
+    print(f'Best model validation accuracy: {best_model_metrics["accuracy"]:.2f}%')
     print(f'Best model checkpoint saved at: {checkpoint_path}')
 
     # Save the training details to a file
@@ -147,7 +146,7 @@ def main() -> None:
         f.write(f'Best model step: {best_model_step}\n')
         f.write(f'Best model validation loss: {best_val_loss:.2f}\n')
         f.write(
-            f'Best model validation accuracy: {best_model_metrics["accuracy"]:.2f}\n'
+            f'Best model validation accuracy: {best_model_metrics["accuracy"]:.2f}%\n'
         )
         f.write(f'Best model checkpoint saved at: {checkpoint_path}\n')
 

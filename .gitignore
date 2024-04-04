@@ -7,24 +7,19 @@ __pycache__/
 venv/
 .venv/
 deepmind/
-spectral_ssm/
+dm_env/
+ssm_env/
 
-# Linter
+# Linter cache
 .ruff_cache/
 
-# Dataset
-data/
-
-# Training
+# Training artifacts
 checkpoint.pt
 training_details.txt
 
 # Distribution / packaging
 .Python
-spectral_ssm.egg-info/
-data/
 build/
-develop-eggs/
 dist/
 downloads/
 eggs/
@@ -37,6 +32,9 @@ var/
 wheels/
 share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 MANIFEST
+data/
+develop-eggs/
+spectral_ssm.egg-info/
+.installed.cfg

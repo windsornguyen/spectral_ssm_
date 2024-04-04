@@ -69,7 +69,6 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
             (self.min_lr + (self.lr - self.min_lr) * cos_factor) for _ in self.base_lrs
         ]
 
-    # TODO: Use this somewhere?
     def get_last_lr(self):
         """Get last computed learning rate by scheduler."""
         return self._last_lr

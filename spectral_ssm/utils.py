@@ -3,7 +3,7 @@
 # File: utils.py
 # =============================================================================#
 
-### This file is not used and may potentially be deleted. ###
+### This file is not currently used and may potentially be deleted. ###
 
 """General-purpose utilities."""
 

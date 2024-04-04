@@ -7,9 +7,8 @@
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 
 class Experiment:
@@ -20,7 +19,8 @@ class Experiment:
     def __init__(
         self,
         model: nn.Module,
-        optimizer: optim.Optimizer,
+        optimizer: torch.optim.Optimizer,
+        device: torch.device = None,
     ) -> None:
         """
         Initializes an experiment.
@@ -28,52 +28,62 @@ class Experiment:
         Args:
           model: A PyTorch model.
           optimizer: A PyTorch optimizer.
-          loss_fn: A function to compute the loss given outputs and targets.
           device: The device to run the model on.
         """
         self.model = model
         self.optimizer = optimizer
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        # TODO: Write GitHub Issue for PyTorch-MPS,
+        # does not yet support reductions for tensors w/ rank > 4 :(
+        # https://github.com/google/jax/issues/20112
+        # elif torch.backends.mps.is_available():
+        #     self.device = torch.device('mps')
+        else:
+            self.device = torch.device('cpu')
+
         self.model.to(self.device)
-        if torch.cuda.device_count() > 1:
+        if self.device.type == 'cuda' and torch.cuda.device_count() > 1:
             self.model = nn.DataParallel(self.model)
+
+        self.criterion = nn.CrossEntropyLoss()
 
     def loss_fn(
         self, outputs: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """
-        Computes the loss and metrics for a batch of data. (Right?)
+        Computes the loss and metrics for a batch of data.
 
         Args:
-          inputs: A batch of inputs.
-          targets: A batch of targets.
-          training: Whether the model is in training mode.
+          outputs: The model outputs.
+          targets: The target labels.
 
         Returns:
           A tuple of the loss and a dictionary of metrics.
         """
-        criterion = nn.CrossEntropyLoss(reduction='sum')
-        loss = criterion(outputs, targets)
+        loss = self.criterion(outputs, targets)
 
-        probs = F.softmax(outputs, dim=-1)
-        preds = torch.argmax(probs, dim=-1)
-        correct = torch.sum((preds == targets).float())
-        count = targets.numel()
+        _, preds = torch.max(outputs, dim=1)
+        correct = (preds == targets).sum().item()
+        total = targets.size(0)
+        accuracy = 100.0 * correct / total
 
-        metrics = {'loss': loss.item(), 'correct': correct.item(), 'count': count}
+        metrics = {'loss': loss.item(), 'accuracy': accuracy}
         return loss, metrics
 
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
         """
-        Takes a single step of the experiment: forward, backward, and optimize.
+        Performs a single training step: forward pass, backward pass, and optimization.
 
         Args:
-          inputs: A batch of inputs.
-          targets: A batch of targets.
+          inputs: A batch of input data.
+          targets: A batch of target labels.
 
         Returns:
-          metrics: A dictionary of metrics including loss and accuracy.
+          A dictionary of metrics for the training step.
         """
+        self.model.train()
         inputs, targets = inputs.to(self.device), targets.to(self.device)
 
         self.optimizer.zero_grad()
@@ -81,35 +91,36 @@ class Experiment:
         loss, metrics = self.loss_fn(outputs, targets)
         loss.backward()
         self.optimizer.step()
-        accuracy = 100.0 * metrics['correct'] / metrics['count']
-        metrics['accuracy'] = accuracy
-
         return metrics
 
     def evaluate(self, dataloader: DataLoader) -> dict[str, float]:
         """
-        Evaluates the model over an entire epoch.
+        Evaluates the model over an entire dataset.
 
         Args:
           dataloader: A DataLoader providing batches of data for evaluation.
 
         Returns:
-          epoch_metrics: A dictionary of aggregated metrics over the epoch.
+          A dictionary of aggregated metrics over the dataset.
         """
         self.model.eval()
-        total_count, total_loss, total_correct = 0, 0, 0
+        total_loss = 0.0
+        total_correct = 0
+        total_samples = 0
 
         with torch.no_grad():
-            for inputs, targets in dataloader:
+            for inputs, targets in tqdm(
+                dataloader, desc='Evaluating the model...', unit='batch'
+            ):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
-                loss, batch_metrics = self.loss_fn(outputs, targets)
+                loss, metrics = self.loss_fn(outputs, targets)
 
-                total_count += batch_metrics['count']
-                total_loss += loss.item() * batch_metrics['count']
-                total_correct += batch_metrics['correct']
+                total_loss += loss.item() * targets.size(0)
+                total_correct += metrics['accuracy'] * targets.size(0)
+                total_samples += targets.size(0)
 
-        avg_loss = total_loss / total_count
-        accuracy = 100.0 * total_correct / total_count
-        self.model.train()
-        return {'count': total_count, 'loss': avg_loss, 'accuracy': accuracy}
+        avg_loss = total_loss / total_samples
+        avg_accuracy = total_correct / total_samples
+
+        return {'loss': avg_loss, 'accuracy': avg_accuracy}

@@ -7,8 +7,8 @@
 
 import torch
 
-# TODO: Look into accelerating these functions with @torch.jit.script
 
+@torch.jit.script
 def get_hankel_matrix(n: int) -> torch.Tensor:
     """Generate a spectral Hankel matrix.
 
@@ -23,6 +23,7 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
     return 2 / ((row_indices + column_indices) ** 3 - (row_indices + column_indices))
 
 
+@torch.jit.script
 def get_top_hankel_eigh(
     n: int,
     k: int,
@@ -43,6 +44,7 @@ def get_top_hankel_eigh(
     return top_k_eig_vals, top_k_eig_vecs
 
 
+@torch.jit.script
 def get_random_real_matrix(
     shape: list[int],
     scaling: float,
@@ -65,6 +67,7 @@ def get_random_real_matrix(
     return scaling * random_bounded
 
 
+@torch.jit.script
 def shift(
     x: torch.Tensor,
 ) -> torch.Tensor:
@@ -85,6 +88,7 @@ def shift(
     return shifted
 
 
+@torch.jit.script
 def tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     """
     Perform truncated convolution using FFT.
@@ -123,6 +127,7 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     return mmconv(v, u)
 
 
+@torch.jit.script
 def compute_y_t(
     m_y: torch.Tensor,
     deltas: torch.Tensor,
@@ -153,6 +158,7 @@ def compute_y_t(
     return ys
 
 
+@torch.jit.script
 def compute_ar_x_preds(
     w: torch.Tensor,
     x: torch.Tensor,

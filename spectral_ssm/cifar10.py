@@ -6,8 +6,9 @@
 """Data pipeline for CIFAR10."""
 
 import torch
-from torchvision import datasets, transforms
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
+
+from torchvision import datasets, transforms
 
 
 class Transform:

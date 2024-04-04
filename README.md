@@ -26,9 +26,31 @@ memory.
 
 ## Installation
 
-Clone and navigate to the `spectral_ssm` directory containing `setup.py`. Run:
+Clone and navigate to the `spectral_ssm` directory containing `setup.py`.
 
-```bash
+Optionally, create a virtual environment:
+
+```zsh
+python3 -m venv ssm_env
+source ssm_env/bin/activate
+```
+
+If you want to train on Apple's Metal Performance Shaders (MPS) backend,
+you need to install PyTorch Nightly before installing the rest of the requirements:
+
+```zsh
+pip install --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cpu
+```
+
+To install the required packages, run:
+
+```zsh
+pip install -r requirements.txt
+```
+
+or
+
+```zsh
 pip install -e .
 ```
 
@@ -37,7 +59,7 @@ pip install -e .
 The `example.py` file contains the full training pipeline. `model.py` contains
 code for the model itself, including the Spectral Temporal Unit (STU) block.
 
-```bash
+```zsh
 torchrun --nproc_per_node=1 example.py
 ```
 
@@ -60,12 +82,10 @@ Copyright 2024 DeepMind Technologies Limited
 
 All software is licensed under the Apache License, Version 2.0 (Apache 2.0);
 you may not use this file except in compliance with the Apache 2.0 license.
-You may obtain a copy of the Apache 2.0 license at:
-https://www.apache.org/licenses/LICENSE-2.0
+You may obtain a copy of the Apache 2.0 license [here](https://www.apache.org/licenses/LICENSE-2.0).
 
 All other materials are licensed under the Creative Commons Attribution 4.0
-International License (CC-BY). You may obtain a copy of the CC-BY license at:
-https://creativecommons.org/licenses/by/4.0/legalcode
+International License (CC-BY). You may obtain a copy of the CC-BY license [here](https://creativecommons.org/licenses/by/4.0/legalcode).
 
 Unless required by applicable law or agreed to in writing, all software and
 materials distributed here under the Apache 2.0 or CC-BY licenses are

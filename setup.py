@@ -16,16 +16,17 @@
 """Spectral State Space Models.
 
 See more details in the
-[`README.md`](https://github.com/google-deepmind/spectral_ssm).
+[`README.md`](https://github.com/windsornguyen/spectral_ssm).
 """
 
 import setuptools
 
 setuptools.setup(
     name='spectral_ssm',
-    version='0.9.5',
+    version='1.1',
     description='Spectral State Space Models',
-    author='Spectral SSM Team',
+    author='Yagiz Devre, Evan Dogariu, Chiara von Gerlach, \
+        Isabel Liu, Windsor Nguyen, Dwaipayan Saha, Daniel Suo', # Alphabetical
     author_email='mn4560@princeton.edu',
     url='http://github.com/windsornguyen/spectral_ssm',
     license='Apache 2.0',
