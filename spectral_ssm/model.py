@@ -6,7 +6,6 @@
 """Spectral temporal unit (STU) block."""
 
 import functools
-
 import torch
 import torch.nn as nn
 
@@ -160,6 +159,7 @@ class Architecture(nn.Module):
                     nn.Dropout(dropout),
                     nn.Linear(d_model, 2 * d_model),
                     nn.GLU(dim=-1),
+                    nn.Dropout(dropout),
                 )
                 for _ in range(num_layers)
             ]
@@ -171,7 +171,7 @@ class Architecture(nn.Module):
         """Forward pass.
 
         Args:
-          inputs: Input tensor of shape (B, C, H, W), 
+          inputs: Input tensor of shape (B, C, H, W),
             where B is the batch size, C is the number of channels,
             H is the height, and W is the width.
 
