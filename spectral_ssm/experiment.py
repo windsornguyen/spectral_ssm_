@@ -7,7 +7,9 @@
 
 import torch
 import torch.nn as nn
+
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 
 class Experiment:
@@ -32,7 +34,9 @@ class Experiment:
         self.model = model
         self.optimizer = optimizer
 
-        if torch.cuda.is_available():
+        if device is not None:
+            self.device = device
+        elif torch.cuda.is_available():
             self.device = torch.device('cuda')
         # TODO: Write GitHub Issue for PyTorch-MPS,
         # does not yet support reductions for tensors w/ rank > 4 :(
@@ -43,9 +47,6 @@ class Experiment:
             self.device = torch.device('cpu')
 
         self.model.to(self.device)
-        if self.device.type == 'cuda' and torch.cuda.device_count() > 1:
-            self.model = nn.DataParallel(self.model)
-
         self.criterion = nn.CrossEntropyLoss()
 
     def loss_fn(
@@ -108,13 +109,13 @@ class Experiment:
         total_samples = 0
 
         with torch.no_grad():
-            for inputs, targets in dataloader:
+            for inputs, targets in tqdm(dataloader, desc="Evaluating model..."):
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
                 outputs = self.model(inputs)
                 loss, metrics = self.loss_fn(outputs, targets)
 
                 total_loss += loss.item() * targets.size(0)
-                total_correct += metrics['accuracy'] * targets.size(0)
+                total_correct += metrics['accuracy'] / 100.0 * targets.size(0)
                 total_samples += targets.size(0)
 
         avg_loss = total_loss / total_samples
