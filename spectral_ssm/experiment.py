@@ -67,7 +67,7 @@ class Experiment:
         _, preds = torch.max(outputs, dim=1)
         correct = (preds == targets).sum().item()
         total = targets.size(0)
-        accuracy = 100.0 * correct / total
+        accuracy = correct / total
 
         metrics = {'loss': loss.item(), 'accuracy': accuracy}
         return loss, metrics
@@ -91,6 +91,8 @@ class Experiment:
         loss, metrics = self.loss_fn(outputs, targets)
         loss.backward()
         self.optimizer.step()
+        metrics['accuracy'] *= 100
+
         return metrics
 
     def evaluate(self, dataloader: DataLoader) -> dict[str, float]:
@@ -115,10 +117,10 @@ class Experiment:
                 loss, metrics = self.loss_fn(outputs, targets)
 
                 total_loss += loss.item() * targets.size(0)
-                total_correct += metrics['accuracy'] / 100.0 * targets.size(0)
+                total_correct += metrics['accuracy'] * targets.size(0)
                 total_samples += targets.size(0)
 
         avg_loss = total_loss / total_samples
-        avg_accuracy = total_correct / total_samples
+        avg_accuracy = (total_correct / total_samples) * 100
 
         return {'loss': avg_loss, 'accuracy': avg_accuracy}
