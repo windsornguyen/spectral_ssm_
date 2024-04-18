@@ -21,16 +21,18 @@ def apply_stu(
     """Apply STU.
 
     Args:
-      params: A tuple of parameters of shapes [d_out, d_out], [d_in, d_out, k_u],
-        [d_in * k, d_out] and [d_in * k, d_out]
-      inputs: Input matrix of shape [l, d_in].
-      eigh: A tuple of eigenvalues [k] and circulant eigenvecs [k, l, l].
+        params (tuple[torch.Tensor, torch.Tensor, torch.Tensor]): The parameters.
+        inputs (torch.Tensor): Input matrix of shape [l, d_in].
+        eigh (tuple[torch.Tensor, torch.Tensor]): Eigenvalues and eigenvectors.
 
     Returns:
-      A sequence of y_ts of shape [l, d_out].
+        torch.Tensor: A sequence of y_ts of shape [l, d_out].
     """
-    m_y, m_u, m_phi = params
-    x_tilde = stu_utils.compute_x_tilde(inputs, eigh).to(inputs.device)
+    device = inputs.device
+    m_y, m_u, m_phi = (param.to(device) for param in params)
+    eig_vals, eig_vecs = (eig.to(device) for eig in eigh)
+    
+    x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs))
 
     # Compute deltas from the spectral filters, which are of shape [l, d_out].
     delta_phi = x_tilde @ m_phi
@@ -53,20 +55,22 @@ class STU(nn.Module):
         auto_reg_k_u: int = 3,
         auto_reg_k_y: int = 2,
         learnable_m_y: bool = True,
+        device: torch.device = None,
     ) -> None:
         """Initialize STU layer.
 
         Args:
-          d_out: Output dimension.
-          input_len: Input sequence length.
-          num_eigh: Tuple of eigenvalues and vectors sized (k,) and (l, k)
-          auto_reg_k_u: Auto-regressive depth on the input sequence,
-          auto_reg_k_y: Auto-regressive depth on the output sequence,
-          learnable_m_y: m_y matrix learnable,
+            d_out (int): Output dimension.
+            input_len (int): Input sequence length.
+            num_eigh (int): Number of eigenvalues and eigenvectors to use.
+            auto_reg_k_u (int): Auto-regressive depth on the input sequence.
+            auto_reg_k_y (int): Auto-regressive depth on the output sequence.
+            learnable_m_y (bool): Whether the m_y matrix is learnable.
+            device (torch.device): The device to run the model on.
         """
         super(STU, self).__init__()
         self.d_out = d_out
-        self.eigh = stu_utils.get_top_hankel_eigh(input_len, num_eigh)
+        self.eigh = stu_utils.get_top_hankel_eigh(input_len, num_eigh, device)
         self.l, self.k = input_len, num_eigh
         self.auto_reg_k_u = auto_reg_k_u
         self.auto_reg_k_y = auto_reg_k_y
@@ -81,11 +85,13 @@ class STU(nn.Module):
             self.register_buffer(
                 'm_y', torch.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
             )
+        
 
         # NOTE: Assume d_in = d_out
         self.m_u = nn.Parameter(
             stu_utils.get_random_real_matrix((d_out, d_out, auto_reg_k_u), self.m_x_var)
         )
+
         self.m_phi = nn.Parameter(torch.zeros(d_out * num_eigh, d_out))
 
     def forward(
@@ -101,7 +107,6 @@ class STU(nn.Module):
         Returns:
           `torch.Tensor` of preactivations.
         """
-
         params = (self.m_y, self.m_u, self.m_phi)
         return apply_stu(params, inputs, self.eigh)
 
@@ -138,9 +143,6 @@ class Architecture(nn.Module):
         """
         super(Architecture, self).__init__()
         self.embedding = nn.Linear(3, d_model)
-        # TODO:
-        # Make sure to use nn.DataParallel or nn.DistributedDataParallel) to
-        # handle synchronization of batch normalization stats across replicas
         self.batch_norms = nn.ModuleList(
             [nn.BatchNorm1d(d_model, momentum=0.1) for _ in range(num_layers)]
         )
@@ -154,6 +156,9 @@ class Architecture(nn.Module):
                         auto_reg_k_u,
                         auto_reg_k_y,
                         learnable_m_y,
+                        torch.device(
+                            "cuda" if torch.cuda.is_available() else "cpu"
+                        ),
                     ),
                     nn.GELU(),
                     nn.Dropout(dropout),
@@ -164,7 +169,6 @@ class Architecture(nn.Module):
                 for _ in range(num_layers)
             ]
         )
-        self.embedding = nn.Linear(3, d_model)
         self.projection = nn.Linear(d_model, d_target)
 
     def forward(self, inputs):

@@ -13,9 +13,7 @@ from tqdm import tqdm
 
 
 class Experiment:
-    """
-    Initializes and maintains the experiment state.
-    """
+    """Initializes and maintains the experiment state."""
 
     def __init__(
         self,
@@ -23,13 +21,12 @@ class Experiment:
         optimizer: torch.optim.Optimizer,
         device: torch.device = None,
     ) -> None:
-        """
-        Initializes an experiment.
+        """Initialize an experiment.
 
         Args:
-          model: A PyTorch model.
-          optimizer: A PyTorch optimizer.
-          device: The device to run the model on.
+            model (nn.Module): A PyTorch model.
+            optimizer (torch.optim.Optimizer): A PyTorch optimizer.
+            device (torch.device): The device to run the model on.
         """
         self.model = model
         self.optimizer = optimizer
@@ -49,39 +46,36 @@ class Experiment:
         self.model.to(self.device)
         self.criterion = nn.CrossEntropyLoss()
 
+
     def loss_fn(
         self, outputs: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        """
-        Computes the loss and metrics for a batch of data.
+        """Compute the loss and metrics for a batch of data.
 
         Args:
-          outputs: The model outputs.
-          targets: The target labels.
+            outputs (torch.Tensor): The model outputs.
+            targets (torch.Tensor): The target labels.
 
         Returns:
-          A tuple of the loss and a dictionary of metrics.
+            tuple[torch.Tensor, dict[str, float]]: 
+              A tuple of the loss and a dictionary of metrics.
         """
         loss = self.criterion(outputs, targets)
-
-        _, preds = torch.max(outputs, dim=1)
-        correct = (preds == targets).sum().item()
-        total = targets.size(0)
-        accuracy = correct / total
-
+        preds = torch.argmax(outputs, dim=1)
+        accuracy = torch.mean((preds == targets).float()).item() * 100
         metrics = {'loss': loss.item(), 'accuracy': accuracy}
         return loss, metrics
 
+
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
-        """
-        Performs a single training step: forward pass, backward pass, and optimization.
+        """Perform a single training step.
 
         Args:
-          inputs: A batch of input data.
-          targets: A batch of target labels.
+            inputs (torch.Tensor): A batch of input data.
+            targets (torch.Tensor): A batch of target labels.
 
         Returns:
-          A dictionary of metrics for the training step.
+            dict[str, float]: A dictionary of metrics for the training step.
         """
         self.model.train()
         inputs, targets = inputs.to(self.device), targets.to(self.device)
@@ -90,37 +84,43 @@ class Experiment:
         outputs = self.model(inputs)
         loss, metrics = self.loss_fn(outputs, targets)
         loss.backward()
+        # for name, param in self.model.named_parameters():
+        #     if param.grad is None:
+        #         print(name)
         self.optimizer.step()
-        metrics['accuracy'] *= 100
 
         return metrics
 
+
     def evaluate(self, dataloader: DataLoader) -> dict[str, float]:
-        """
-        Evaluates the model over an entire dataset.
+        """Evaluate the model over an entire dataset.
 
         Args:
-          dataloader: A DataLoader providing batches of data for evaluation.
+            dataloader (DataLoader): 
+              A DataLoader providing batches of data for evaluation.
 
         Returns:
-          A dictionary of aggregated metrics over the dataset.
+            dict[str, float]: 
+              A dictionary of aggregated metrics over the dataset.
         """
         self.model.eval()
-        total_loss = 0.0
-        total_correct = 0
-        total_samples = 0
+        losses = []
+        accuracies = []
 
-        with torch.no_grad():
-            for inputs, targets in tqdm(dataloader, desc="Evaluating model..."):
+        with torch.no_grad(), tqdm(
+          total=len(dataloader), desc='Evaluating model...'
+        ) as progress:
+            for inputs, targets in dataloader:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
+
                 outputs = self.model(inputs)
                 loss, metrics = self.loss_fn(outputs, targets)
 
-                total_loss += loss.item() * targets.size(0)
-                total_correct += metrics['accuracy'] * targets.size(0)
-                total_samples += targets.size(0)
+                losses.append(loss.item())
+                accuracies.append(metrics['accuracy'])
+                progress.update(1)
 
-        avg_loss = total_loss / total_samples
-        avg_accuracy = (total_correct / total_samples) * 100
+        avg_loss = torch.mean(torch.tensor(losses)).item()
+        avg_accuracy = torch.mean(torch.tensor(accuracies)).item()
 
         return {'loss': avg_loss, 'accuracy': avg_accuracy}

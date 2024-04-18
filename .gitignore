@@ -13,10 +13,14 @@ ssm_env/
 # Linter cache
 .ruff_cache/
 
+# Testing (internal)
+tests/
+
 # Training artifacts
+*.slurm
 checkpoints/
-checkpoint.pt
 training_details.txt
+*.out
 
 # Distribution / packaging
 .Python

@@ -1,42 +1,39 @@
-# Copyright 2024 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-# ==============================================================================
+# =============================================================================#
+# Authors: Windsor Nguyen
+# File: setup.py
+# =============================================================================#
 
-"""Spectral State Space Models.
-
-See more details in the
-[`README.md`](https://github.com/windsornguyen/spectral_ssm).
-"""
+"""Spectral State Space Models."""
 
 import setuptools
 
+
 setuptools.setup(
     name='spectral_ssm',
-    version='1.1',
-    description='Spectral State Space Models',
-    author='Yagiz Devre, Evan Dogariu, Chiara von Gerlach, \
-        Isabel Liu, Windsor Nguyen, Dwaipayan Saha, Daniel Suo', # Alphabetical
+    version='1.0',
+    description='Dependency manager for Google DeepMind Spectral State Space model',
+    long_description="""
+        Spectral State Space Models. See more details in the
+        [`README.md`](https://github.com/windsornguyen/spectral_ssm).
+        """,
+    long_description_content_type="text/markdown",
+    author='Yagiz Devre, Evan Dogariu, Chiara von Gerlach, Isabel Liu, Windsor Nguyen, Dwaipayan Saha, Daniel Suo',
     author_email='mn4560@princeton.edu',
-    url='http://github.com/windsornguyen/spectral_ssm',
+    url='https://github.com/windsornguyen/spectral_ssm',
     license='Apache 2.0',
     packages=setuptools.find_packages(),
     install_requires=[
-        'torch',
-        'torchvision',
-        'tqdm',
+        'torch==2.2.2',
+        'torchvision==0.17.2',
+        'tqdm>=4.66.2,<5.0',
+        'numpy==1.26.4',
+        'pillow==10.2.0',
+        'sympy==1.12',
     ],
-    extras_require={},
+    python_requires='>=3.9, <3.12',
+    extras_require={
+        'dev': ['ipykernel>=6.29.3', 'ruff>=0.3.7']
+    },
     classifiers=[
         'Development Status :: 3 - Alpha',
         'Intended Audience :: Developers',
