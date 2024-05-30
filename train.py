@@ -1,9 +1,9 @@
 # =============================================================================#
-# Authors: Windsor Nguyen, Dwaipayan Saha
-# File: example.py
+# Authors: Isabel Liu, Yagiz Devre
+# File: train.py
 # =============================================================================#
 
-"""Example training loop."""
+"""Training loop for physics sequence preDiction."""
 
 import argparse
 import numpy as np
@@ -13,7 +13,7 @@ import torch
 import torch.distributed as dist
 from typing import Tuple, Dict
 from datetime import datetime
-from spectral_ssm import cifar10
+from spectral_ssm import physics_data
 from spectral_ssm import experiment
 from spectral_ssm import model
 from spectral_ssm import optimizer
@@ -55,7 +55,7 @@ def setup_distributed_env(local_rank: int) -> Tuple[torch.device, int, int]:
     return device, rank, world_size
 
 
-# To run the script: `torchrun --nproc_per_node=1 example.py`
+# To run the script: `torchrun --nproc_per_node=1 train.py`
 def main() -> None:
     parser = argparse.ArgumentParser(description='Distributed Training Setup')
     parser.add_argument('--local_rank', type=int, default=0)
@@ -69,8 +69,8 @@ def main() -> None:
         print("Lyla: Greetings! I'm Lyla, your friendly neighborhood AI training assistant.")
 
     # Hyperparameters
-    train_batch_size: int = 128 // world_size # scale batch size for distributed training
-    eval_batch_size: int = 128 // world_size  # scale batch size for distributed training
+    train_batch_size: int = 10 // world_size # scale batch size for distributed training
+    eval_batch_size: int = 10 // world_size  # scale batch size for distributed training
     num_steps: int = 3_500
     eval_period: int = 20
     warmup_steps: int = 350
@@ -86,10 +86,10 @@ def main() -> None:
     # Define the model
     spectral_ssm = model.Architecture(
         d_model=256,
-        d_target=10,
+        d_target=29,
         num_layers=6,
         dropout=0.1,
-        input_len=32 * 32,
+        input_len=1000 * 37,
         num_eigh=24,
         auto_reg_k_u=3,
         auto_reg_k_y=2,
@@ -130,24 +130,9 @@ def main() -> None:
         else:
             print(f'{msg} {device} today.')
 
-    train_dataset = cifar10.get_dataset('train')
-    eval_dataset = cifar10.get_dataset('test')
+    train_loader = physics_data.get_dataloader('input_data.npy', 'target_data.npy', 10)
 
-    train_loader = cifar10.get_dataloader(
-        dataset=train_dataset,
-        batch_size=train_batch_size,
-        distributed=(world_size > 1),
-        num_workers=1,
-        pin_memory=True,
-    )
-
-    eval_loader = cifar10.get_dataloader(
-        dataset=eval_dataset,
-        batch_size=eval_batch_size,
-        distributed=(world_size > 1),
-        num_workers=1,
-        pin_memory=True,
-    )
+    eval_loader = physics_data.get_dataloader('input_data_eval.npy', 'target_data_eval.npy', 10)
 
     if main_process:
         print(
@@ -175,7 +160,7 @@ def main() -> None:
             lrs = f"{default_lr:.2e}, m_y_lr={m_y_lr:.2e}"
             pbar.set_postfix(
                 {
-                    'train_acc': f'{train_metrics["accuracy"]:.4f}%',
+                    # 'train_acc': f'{train_metrics["accuracy"]:.4f}%',
                     'train_loss': f'{train_metrics["loss"]:.4f}',
                     'lr': lrs
                 }
@@ -200,18 +185,18 @@ def main() -> None:
                 if main_process:
                     # Aggregate metrics across all processes
                     total_loss = sum(metric['loss'] for metric in gathered_metrics) / world_size
-                    total_accuracy = sum(metric['accuracy'] for metric in gathered_metrics) / world_size
+                    # total_accuracy = sum(metric['accuracy'] for metric in gathered_metrics) / world_size
                     print(
                         f'\nLyla: Evaluating the model on step {global_step}'
-                        f' -- Average Accuracy: {total_accuracy:.4f}%,'
+                        # f' -- Average Accuracy: {total_accuracy:.4f}%,'
                         f' Average Loss: {total_loss:.4f}.'
                     )
-                    epoch_metrics = {'loss': total_loss, 'accuracy': total_accuracy}
+                    epoch_metrics = {'loss': total_loss}
             else:
                 if main_process:
                     print(
                     f'\nLyla: Evaluating the model on step {global_step}'
-                    f' -- Accuracy: {epoch_metrics["accuracy"]:.2f}%,'
+                    # f' -- Accuracy: {epoch_metrics["accuracy"]:.2f}%,'
                     f' Loss: {epoch_metrics["loss"]:.2f}.'
                 )
 
@@ -258,7 +243,7 @@ def main() -> None:
         print("\nLyla: Training completed! Nice work. Here's the best model information:")
         print(f'    Best model at step {best_model_step}')
         print(f'    Best model validation loss: {best_val_loss:.4f}')
-        print(f'    Best model validation accuracy: {best_model_metrics["accuracy"]:.4f}%')
+        # print(f'    Best model validation accuracy: {best_model_metrics["accuracy"]:.4f}%')
         print(f'    Best model checkpoint saved at: {best_checkpoint_path}')
 
         # Save the training details to a file
@@ -268,9 +253,9 @@ def main() -> None:
             f.write(f'Training completed at: {datetime.now()}\n')
             f.write(f'Best model step: {best_model_step}\n')
             f.write(f'Best model validation loss: {best_val_loss:.4f}\n')
-            f.write(
-                f'Best model validation accuracy: {best_model_metrics["accuracy"]:.4f}%\n'
-            )
+            # f.write(
+            #     f'Best model validation accuracy: {best_model_metrics["accuracy"]:.4f}%\n'
+            # )
             f.write(f'Best model checkpoint saved at: {best_checkpoint_path}\n')
         print(
             'Lyla: Congratulations on completing the training run!'

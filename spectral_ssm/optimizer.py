@@ -8,7 +8,7 @@
 
 import torch
 from torch.optim import AdamW
-
+from typing import Tuple, Dict, List
 
 class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
     """Cosine decay with linear warmup."""
@@ -41,7 +41,7 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
         self.warmup_steps = warmup_steps
         super().__init__(optimizer, last_epoch)
 
-    def get_lr(self) -> list[float]:
+    def get_lr(self) -> List[float]:
         """Get learning rate for a given step.
 
         Returns:
@@ -69,7 +69,7 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
             self.min_lr + (self.lr - self.min_lr) * cos_factor for _ in self.base_lrs
         ]
 
-    def get_last_lr(self) -> list[float]:
+    def get_last_lr(self) -> List[float]:
         """Get last computed learning rate by the scheduler.
 
         Returns:
@@ -86,7 +86,7 @@ def get_optimizer(
     weight_decay: float = 1e-1,
     m_y_learning_rate: float = 5e-5,
     m_y_weight_decay: float = 0,
-) -> tuple[torch.optim.AdamW, WarmupCosineDecay]:
+) -> Tuple[torch.optim.AdamW, WarmupCosineDecay]:
     """Get the AdamW optimizer with warmup cosine decay scheduler.
 
     Args:
@@ -99,7 +99,7 @@ def get_optimizer(
         m_y_weight_decay (float): The weight decay for m_y parameters.
 
     Returns:
-        tuple[torch.optim.AdamW, WarmupCosineDecay]: 
+        Tuple[torch.optim.AdamW, WarmupCosineDecay]: 
             The AdamW optimizer and the warmup cosine decay scheduler.
     """
     m_y_params = []

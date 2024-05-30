@@ -6,7 +6,7 @@
 """Spectral State Space Models."""
 
 import setuptools
-
+from typing import Tuple, Dict
 
 setuptools.setup(
     name='spectral_ssm',

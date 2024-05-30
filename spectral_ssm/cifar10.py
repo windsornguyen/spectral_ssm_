@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
-
+from typing import Tuple, Dict
 
 class Transform:
     """Class for normalizing images with dataset-specific statistics."""

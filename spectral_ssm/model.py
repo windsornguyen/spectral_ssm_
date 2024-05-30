@@ -1,5 +1,5 @@
 # ==============================================================================#
-# Authors: Windsor Nguyen, Dwaipayan Saha
+# Authors: Windsor Nguyen, Dwaipayan Saha, Isabel Liu, Yagiz Devre
 # File: model.py
 # ==============================================================================#
 
@@ -8,22 +8,22 @@
 import functools
 import torch
 import torch.nn as nn
-
+from typing import Tuple, Dict
 from spectral_ssm import stu_utils
 
 
 @functools.partial(torch.vmap, in_dims=(None, 0, None))
 def apply_stu(
-    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    params: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     inputs: torch.Tensor,
-    eigh: tuple[torch.Tensor, torch.Tensor],
+    eigh: Tuple[torch.Tensor, torch.Tensor],
 ) -> torch.Tensor:
     """Apply STU.
 
     Args:
-        params (tuple[torch.Tensor, torch.Tensor, torch.Tensor]): The parameters.
+        params (Tuple[torch.Tensor, torch.Tensor, torch.Tensor]): The parameters.
         inputs (torch.Tensor): Input matrix of shape [l, d_in].
-        eigh (tuple[torch.Tensor, torch.Tensor]): Eigenvalues and eigenvectors.
+        eigh (Tuple[torch.Tensor, torch.Tensor]): Eigenvalues and eigenvectors.
 
     Returns:
         torch.Tensor: A sequence of y_ts of shape [l, d_out].
@@ -50,7 +50,7 @@ class STU(nn.Module):
     def __init__(
         self,
         d_out: int = 256,
-        input_len: int = 32 * 32,  # CIFAR-10 dimensions
+        input_len: int = 1000 * 37,  # state + action input dimensions
         num_eigh: int = 24,
         auto_reg_k_u: int = 3,
         auto_reg_k_y: int = 2,
@@ -119,10 +119,10 @@ class Architecture(nn.Module):
     def __init__(
         self,
         d_model=256,
-        d_target=10,
+        d_target=29,
         num_layers=6,
         dropout=0.1,
-        input_len=32 * 32,  # CIFAR-10 dimensions
+        input_len=1000 * 37,  # state + action input dimensions
         num_eigh=24,
         auto_reg_k_u=3,
         auto_reg_k_y=2,
@@ -142,7 +142,7 @@ class Architecture(nn.Module):
           learnable_m_y: Whether the m_y matrix is learnable.
         """
         super(Architecture, self).__init__()
-        self.embedding = nn.Linear(3, d_model)
+        self.embedding = nn.Linear(37, d_model)
         self.batch_norms = nn.ModuleList(
             [nn.BatchNorm1d(d_model, momentum=0.1) for _ in range(num_layers)]
         )
@@ -184,6 +184,7 @@ class Architecture(nn.Module):
         """
         # Reshape input for embedding
         batch_size, channels, height, width = inputs.shape
+        print(inputs.shape)
         x = inputs.view(batch_size, channels, height * width).permute(0, 2, 1)
 
         # Embedding layer.

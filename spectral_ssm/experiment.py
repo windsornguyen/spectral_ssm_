@@ -7,7 +7,7 @@
 
 import torch
 import torch.nn as nn
-
+from typing import Tuple, Dict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -47,9 +47,7 @@ class Experiment:
         self.criterion = nn.CrossEntropyLoss()
 
 
-    def loss_fn(
-        self, outputs: torch.Tensor, targets: torch.Tensor
-    ) -> tuple[torch.Tensor, dict[str, float]]:
+    def loss_fn(self, outputs: torch.Tensor, targets: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Compute the loss and metrics for a batch of data.
 
         Args:
@@ -57,17 +55,39 @@ class Experiment:
             targets (torch.Tensor): The target labels.
 
         Returns:
-            tuple[torch.Tensor, dict[str, float]]: 
-              A tuple of the loss and a dictionary of metrics.
+            Tuple[torch.Tensor, Dict[str, float]]: 
+              A Tuple of the loss and a Dictionary of metrics.
         """
-        loss = self.criterion(outputs, targets)
-        preds = torch.argmax(outputs, dim=1)
-        accuracy = torch.mean((preds == targets).float()).item() * 100
-        metrics = {'loss': loss.item(), 'accuracy': accuracy}
+        # loss = self.criterion(outputs, targets)
+        # preds = torch.argmax(outputs, dim=1)
+        # accuracy = torch.mean((preds == targets).float()).item() * 100
+        # metrics = {'loss': loss.item(), 'accuracy': accuracy}
+
+        total_loss = torch.tensor(0.0, device=outputs.device)
+        for i in range(outputs.shape[0]):
+            loss = (outputs[i]-targets[i])**2
+            metrics = {'loss': loss.item()}
+            
+            # scaling by constant just for now
+            if i in (0, 1, 2): # coordinates of the torso (center)
+                loss = loss/5
+            elif i in (3, 4, 5, 6): # orientations of the torso (center)
+                loss = loss/0.2
+            elif i in (7, 8, 9, 10, 11, 12, 13, 14): # angles between the torso and the links
+                loss = loss/0.5
+            elif i in (15, 16, 17, 18, 19, 20): # coordinate and coordinate angular velocities of the torso (center)
+                loss = loss/2
+            elif i in (21, 22, 23, 24, 25, 26, 27, 28): # angular velocities of the angles between the torso and the links
+                loss = loss/5
+            
+            total_loss += loss
+            
+        total_loss = total_loss/outputs.shape[0]
+        
         return loss, metrics
 
 
-    def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
+    def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
         """Perform a single training step.
 
         Args:
@@ -75,7 +95,7 @@ class Experiment:
             targets (torch.Tensor): A batch of target labels.
 
         Returns:
-            dict[str, float]: A dictionary of metrics for the training step.
+            Dict[str, float]: A Dictionary of metrics for the training step.
         """
         self.model.train()
         inputs, targets = inputs.to(self.device), targets.to(self.device)
@@ -92,7 +112,7 @@ class Experiment:
         return metrics
 
 
-    def evaluate(self, dataloader: DataLoader) -> dict[str, float]:
+    def evaluate(self, dataloader: DataLoader) -> Dict[str, float]:
         """Evaluate the model over an entire dataset.
 
         Args:
@@ -100,12 +120,12 @@ class Experiment:
               A DataLoader providing batches of data for evaluation.
 
         Returns:
-            dict[str, float]: 
-              A dictionary of aggregated metrics over the dataset.
+            Dict[str, float]: 
+              A Dictionary of aggregated metrics over the dataset.
         """
         self.model.eval()
         losses = []
-        accuracies = []
+        # accuracies = []
 
         with torch.no_grad(), tqdm(
           total=len(dataloader), desc='Evaluating model...'
@@ -117,10 +137,10 @@ class Experiment:
                 loss, metrics = self.loss_fn(outputs, targets)
 
                 losses.append(loss.item())
-                accuracies.append(metrics['accuracy'])
+                # accuracies.append(metrics['accuracy'])
                 progress.update(1)
 
         avg_loss = torch.mean(torch.tensor(losses)).item()
-        avg_accuracy = torch.mean(torch.tensor(accuracies)).item()
+        # avg_accuracy = torch.mean(torch.tensor(accuracies)).item()
 
-        return {'loss': avg_loss, 'accuracy': avg_accuracy}
+        return {'loss': avg_loss}

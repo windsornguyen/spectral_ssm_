@@ -7,7 +7,7 @@
 
 import torch
 import torch.nn.functional as F
-
+from typing import Tuple, Dict, List
 
 @torch.jit.script
 def get_hankel_matrix(
@@ -33,7 +33,7 @@ def get_top_hankel_eigh(
     n: int, 
     k: int, 
     device: torch.device
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
 
     Args:
@@ -41,7 +41,7 @@ def get_top_hankel_eigh(
         k (int): Number of eigenvalues to return.
 
     Returns:
-        tuple[torch.Tensor, torch.Tensor]: A tuple of eigenvalues of shape [k,] and 
+        Tuple[torch.Tensor, torch.Tensor]: A Tuple of eigenvalues of shape [k,] and 
             eigenvectors of shape [n, k].
     """
     eig_vals, eig_vecs = torch.linalg.eigh(get_hankel_matrix(n, device=device))
@@ -50,7 +50,7 @@ def get_top_hankel_eigh(
 
 @torch.jit.script
 def get_random_real_matrix(
-    shape: list[int],
+    shape: List[int],
     scaling: float,
     lower: float = -2.0,
     upper: float = 2.0,
@@ -204,13 +204,13 @@ def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
 
 
 def compute_x_tilde(
-    inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
+    inputs: torch.Tensor, eigh: Tuple[torch.Tensor, torch.Tensor]
 ) -> torch.Tensor:
     """Compute the x_tilde component of spectral SSM.
 
     Args:
         inputs (torch.Tensor): A tensor of shape [seq_len, d_in].
-        eigh (tuple[torch.Tensor, torch.Tensor]): A tuple of eigenvalues of shape [k,] and 
+        eigh (Tuple[torch.Tensor, torch.Tensor]): A Tuple of eigenvalues of shape [k,] and 
             eigenvectors of shape [seq_len, k].
 
     Returns:
