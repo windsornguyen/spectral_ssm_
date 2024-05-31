@@ -8,10 +8,10 @@ The original JAX implementation was
 written by Daniel Suo and can be found in this
 [repository](https://github.com/google-deepmind/spectral_ssm).
 
-The paper studies sequence modeling for preDiction tasks with long range
+The paper studies sequence modeling for prediction tasks with long range
 dependencies. We propose a new formulation for state space models (SSMs) based
 on learning linear dynamical systems with the spectral filtering algorithm
-(Hazan et al. (2017)). This gives rise to a novel sequence preDiction
+(Hazan et al. (2017)). This gives rise to a novel sequence prediction
 architecture we call a spectral state space model.
 
 Spectral state space models have two primary advantages. First, they have
@@ -20,7 +20,7 @@ spectrum of the underlying dynamics nor the dimensionality of the problem.
 Second, these models are constructed with fixed convolutional filters that do
 not require learning while still outperforming SSMs in both theory and practice.
 The resulting models are evaluated on synthetic dynamical systems and long-range
-preDiction tasks of various modalities. These evaluations support the
+prediction tasks of various modalities. These evaluations support the
 theoretical benefits of spectral filtering for tasks requiring very long range
 memory.
 

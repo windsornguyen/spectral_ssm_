@@ -123,10 +123,10 @@ def main() -> None:
     # Hyperparameters
     train_batch_size: int = 10 // world_size # scale batch size for distributed training
     eval_batch_size: int = 10 // world_size  # scale batch size for distributed training
-    num_steps: int = 3_500
-    eval_period: int = 20
-    warmup_steps: int = 350
-    learning_rate: float = 1e-3
+    num_steps: int = 3_500 // 6
+    eval_period: int = 25
+    warmup_steps: int = 350 // 6
+    learning_rate: float = 5e-4
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
     m_y_weight_decay: float = 0
@@ -141,7 +141,7 @@ def main() -> None:
         d_target=29,
         num_layers=6,
         dropout=0.1,
-        input_len=37,
+        input_len=500 * 37,
         num_eigh=24,
         auto_reg_k_u=3,
         auto_reg_k_y=2,

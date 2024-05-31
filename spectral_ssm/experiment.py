@@ -56,13 +56,7 @@ class Experiment:
         """
         total_loss = torch.tensor(0.0, device=outputs.device)
         for i in range(outputs.shape[1]):
-            # Print statements to debug
-            print(f"Processing output index {i}")
-            print(f"outputs[:, {i}]: {outputs[:, i]}")
-            print(f"targets[:, {i}]: {targets[:, i]}")
-
             loss = (outputs[:, i] - targets[:, i]) ** 2
-            print(f"Initial loss at index {i}: {loss}")
 
             # scaling by constant just for now
             if i in (0, 1, 2): # coordinates of the torso (center)
@@ -76,13 +70,9 @@ class Experiment:
             elif i in (21, 22, 23, 24, 25, 26, 27, 28): # angular velocities of the angles between the torso and the links
                 loss = loss / 5
 
-            print(f"Scaled loss at index {i}: {loss}")
-
             total_loss += loss.mean()
 
         total_loss = total_loss / outputs.shape[1]
-        print(f"Total loss: {total_loss}")
-
         metrics = {'loss': total_loss.item()}
 
         return total_loss, metrics

@@ -10,9 +10,7 @@ import torch.nn.functional as F
 
 
 @torch.jit.script
-def get_hankel_matrix(
-    n: int, 
-) -> torch.Tensor:
+def get_hankel_matrix(n: int) -> torch.Tensor:
     """Generate a spectral Hankel matrix.
 
     Args:
@@ -21,17 +19,16 @@ def get_hankel_matrix(
     Returns:
         torch.Tensor: A spectral Hankel matrix of shape [n, n].
     """
+    print('get hankel')
     indices = torch.arange(1, n + 1)
     sum_indices = indices[:, None] + indices[None, :]
     z = 2 / (sum_indices ** 3 - sum_indices)
+    print('got hankel')
     return z
 
 
 @torch.jit.script
-def get_top_hankel_eigh(
-    n: int, 
-    k: int, 
-) -> tuple[torch.Tensor, torch.Tensor]:
+def get_top_hankel_eigh(n: int, k: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
     """Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
 
     Args:
@@ -42,7 +39,10 @@ def get_top_hankel_eigh(
         tuple[torch.Tensor, torch.Tensor]: A tuple of eigenvalues of shape [k,] and 
             eigenvectors of shape [n, k].
     """
-    eig_vals, eig_vecs = torch.linalg.eigh(get_hankel_matrix(n))
+    print('top_eigh')
+    hankel_matrix = get_hankel_matrix(n).to(device)
+    eig_vals, eig_vecs = torch.linalg.eigh(hankel_matrix)
+    print('top done')
     return eig_vals[-k:], eig_vecs[:, -k:]
 
 
@@ -221,7 +221,7 @@ def compute_x_tilde(
     eig_vals, eig_vecs = eigh
     # print("compute_x_tilde - eig_vals:", eig_vals)
     # print("compute_x_tilde - eig_vecs:", eig_vecs)
-    print("compute_x_tilde - inputs:", inputs)
+    # print("compute_x_tilde - inputs:", inputs)
     seq_len = inputs.shape[0]
     x_tilde = conv(eig_vecs, inputs)
     x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals**0.25, 0), -1)

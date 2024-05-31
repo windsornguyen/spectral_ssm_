@@ -25,15 +25,16 @@ class STU(nn.Module):
     def __init__(
         self,
         d_out: int = 37,
-        input_len: int = 37,
+        input_len: int = 500 * 37,
         num_eigh: int = 24,
         auto_reg_k_u: int = 3,
         auto_reg_k_y: int = 2,
         learnable_m_y: bool = True,
     ) -> None:
         super(STU, self).__init__()
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.d_out = d_out
-        self.eigh = stu_utils.get_top_hankel_eigh(input_len, num_eigh)
+        self.eigh = stu_utils.get_top_hankel_eigh(input_len, num_eigh, self.device)
         self.l, self.k = input_len, num_eigh
         self.auto_reg_k_u = auto_reg_k_u
         self.auto_reg_k_y = auto_reg_k_y
@@ -53,7 +54,7 @@ class STU(nn.Module):
             stu_utils.get_random_real_matrix((d_out, d_out, auto_reg_k_u), self.m_x_var)
         )
 
-        self.m_phi = nn.Parameter(torch.zeros(d_out * num_eigh, d_out))
+        self.m_phi = nn.Parameter(torch.zeros(500 * d_out * num_eigh, d_out))
 
     def apply_stu(self, inputs: torch.Tensor) -> torch.Tensor:
         """Apply the STU transformation to the input tensor.
@@ -64,7 +65,6 @@ class STU(nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape (L, d_out).
         """
-        print('inputs are', inputs)
         eig_vals, eig_vecs = self.eigh
         eig_vals = eig_vals.to(inputs.device)
         eig_vecs = eig_vecs.to(inputs.device)
