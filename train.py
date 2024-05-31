@@ -141,7 +141,7 @@ def main() -> None:
         d_target=29,
         num_layers=6,
         dropout=0.1,
-        input_len=500 * 37,
+        input_len=1000,
         num_eigh=24,
         auto_reg_k_u=3,
         auto_reg_k_y=2,

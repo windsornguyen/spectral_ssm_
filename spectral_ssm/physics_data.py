@@ -12,8 +12,8 @@ class PhysicsDataset(Dataset):
             input_file (str): Path to the numpy file containing inputs.
             target_file (str): Path to the numpy file containing targets.
         """
-        self.inputs = np.load(input_file)  # Shape (1000, 37)
-        self.targets = np.load(target_file)  # Shape (1000, 29)
+        self.inputs = np.load(input_file)  # Shape (n, 1000, 37), for testing n=10
+        self.targets = np.load(target_file)  # Shape (n, 1000, 29)
 
     def __len__(self):
         """Denotes the total number of samples."""

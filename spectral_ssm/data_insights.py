@@ -1,7 +1,7 @@
 import numpy as np
 
-input_data = np.load('input_data.npy')  # (1000, 37)
-output_data = np.load('output_data.npy')  # (1000, 29)
+input_data = np.load('input_data.npy')  # (n, 1000, 37)
+output_data = np.load('output_data.npy')  # (n, 1000, 29)
 
 print("Input Data Stats:")
 print("Means:", np.mean(input_data, axis=0))

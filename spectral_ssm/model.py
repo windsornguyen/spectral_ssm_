@@ -25,7 +25,7 @@ class STU(nn.Module):
     def __init__(
         self,
         d_out: int = 37,
-        input_len: int = 500 * 37,
+        input_len: int = 1000,
         num_eigh: int = 24,
         auto_reg_k_u: int = 3,
         auto_reg_k_y: int = 2,
@@ -105,7 +105,7 @@ class Architecture(nn.Module):
         d_target=29,
         num_layers=6,
         dropout=0.1,
-        input_len=37,
+        input_len=1000,
         num_eigh=24,
         auto_reg_k_u=3,
         auto_reg_k_y=2,
