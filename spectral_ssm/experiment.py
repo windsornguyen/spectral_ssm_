@@ -95,6 +95,17 @@ class Experiment:
         outputs = self.model(inputs)
         loss, metrics = self.loss_fn(outputs, targets)
         loss.backward()
+
+        # Compute gradient norm to monitor vanishing/exploding gradients
+        total_norm = 0
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2).item()
+                total_norm += param_norm ** 2
+                # print(f'{name}: {param_norm:.4f}')
+        total_norm = total_norm ** 0.5
+        print(f'Total grad norm: {total_norm:.4f}')
+
         self.optimizer.step()
 
         return metrics

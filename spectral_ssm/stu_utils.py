@@ -19,16 +19,18 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
     Returns:
         torch.Tensor: A spectral Hankel matrix of shape [n, n].
     """
-    print('get hankel')
     indices = torch.arange(1, n + 1)
     sum_indices = indices[:, None] + indices[None, :]
     z = 2 / (sum_indices ** 3 - sum_indices)
-    print('got hankel')
     return z
 
 
 @torch.jit.script
-def get_top_hankel_eigh(n: int, k: int, device: torch.device) -> tuple[torch.Tensor, torch.Tensor]:
+def get_top_hankel_eigh(
+    n: int, 
+    k: int, 
+    device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
 
     Args:
@@ -39,10 +41,8 @@ def get_top_hankel_eigh(n: int, k: int, device: torch.device) -> tuple[torch.Ten
         tuple[torch.Tensor, torch.Tensor]: A tuple of eigenvalues of shape [k,] and 
             eigenvectors of shape [n, k].
     """
-    print('top_eigh')
     hankel_matrix = get_hankel_matrix(n).to(device)
     eig_vals, eig_vecs = torch.linalg.eigh(hankel_matrix)
-    print('top done')
     return eig_vals[-k:], eig_vecs[:, -k:]
 
 
@@ -134,12 +134,6 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: A matrix of shape [seq_len, k, d_in].
     """
-    seq_len, k = v.shape
-    d_in = u.shape[0]
-    
-    # Reshape u to [seq_len, d_in]
-    u = u.unsqueeze(0).expand(seq_len, d_in)
-    
     # Convolve each sequence of length `seq_len` in v with each sequence in u.
     mvconv = torch.vmap(tr_conv, in_dims=(1, None), out_dims=1)
     mmconv = torch.vmap(mvconv, in_dims=(None, 1), out_dims=-1)
@@ -185,9 +179,6 @@ def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     """
     d_out, d_in, k = w.shape
     seq_len = x.shape[0]
-
-    # Add a new dimension to x to match the equation
-    x = x.unsqueeze(1)
 
     # Contract over `d_in`
     o = torch.einsum('oik,li->klo', w, x)
