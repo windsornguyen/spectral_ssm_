@@ -18,6 +18,8 @@ pillow = "10.2.0"
 numpy = "1.26.4"
 sympy = "1.12"
 tqdm = "^4.66.2"
+matplotlib = "^3.8.4"
+accelerate = "^0.29.3"
 
 [tool.poetry.dev-dependencies]
 # See `ruff help` for more on Ruff's top-level commands.

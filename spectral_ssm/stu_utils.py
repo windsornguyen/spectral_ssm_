@@ -12,7 +12,6 @@ import torch.nn.functional as F
 @torch.jit.script
 def get_hankel_matrix(
     n: int, 
-    device: torch.device
 ) -> torch.Tensor:
     """Generate a spectral Hankel matrix.
 
@@ -22,7 +21,7 @@ def get_hankel_matrix(
     Returns:
         torch.Tensor: A spectral Hankel matrix of shape [n, n].
     """
-    indices = torch.arange(1, n + 1, device=device)
+    indices = torch.arange(1, n + 1)
     sum_indices = indices[:, None] + indices[None, :]
     z = 2 / (sum_indices ** 3 - sum_indices)
     return z
@@ -32,7 +31,6 @@ def get_hankel_matrix(
 def get_top_hankel_eigh(
     n: int, 
     k: int, 
-    device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
 
@@ -44,7 +42,7 @@ def get_top_hankel_eigh(
         tuple[torch.Tensor, torch.Tensor]: A tuple of eigenvalues of shape [k,] and 
             eigenvectors of shape [n, k].
     """
-    eig_vals, eig_vecs = torch.linalg.eigh(get_hankel_matrix(n, device=device))
+    eig_vals, eig_vecs = torch.linalg.eigh(get_hankel_matrix(n))
     return eig_vals[-k:], eig_vecs[:, -k:]
 
 
@@ -84,9 +82,7 @@ def shift(x: torch.Tensor) -> torch.Tensor:
         torch.Tensor: A tensor of shape [seq_len, d] where index [0, :] is all zeros and 
             [i, :] is equal to x[i - 1, :] for i > 0.
     """
-    result = torch.zeros_like(x)
-    result[1:] = x[:-1]
-    return result
+    return torch.cat([torch.zeros_like(x[:1]), x[:-1]], dim=0)
 
 
 @torch.jit.script
@@ -113,9 +109,15 @@ def tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     v_padded = F.pad(v, (0, padded_len - seq_len))
     u_padded = F.pad(u, (0, padded_len - seq_len))
     
+    print("v_padded shape:", v_padded.shape)
+    print("u_padded shape:", u_padded.shape)
+    
     # FFT and element-wise multiplication for convolution
     v_fft = torch.fft.rfft(v_padded)
     u_fft = torch.fft.rfft(u_padded)
+    
+    print("v_fft shape:", v_fft.shape)
+    print("u_fft shape:", u_fft.shape)
     
     # Element-wise multiplication in the frequency domain
     output_fft = v_fft * u_fft
@@ -144,7 +146,7 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     return mmconv(v, u)
 
 
-@torch.jit.script
+
 def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     """Compute sequence of y_t given a series of deltas and m_y via a simple scan.
 
@@ -157,21 +159,16 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
         torch.Tensor: A matrix of shape [seq_len, d_out].
     """
     d_out, k, _ = m_y.shape
-    carry = torch.zeros((k, d_out), device=deltas.device)
+    carry = torch.zeros((k, d_out), device=m_y.device)
     ys = []
 
     for x in deltas:
         output = torch.tensordot(m_y, carry, dims=2) + x
-        carry = torch.roll(carry, 1, dims=0)
+        carry = torch.cat((output.unsqueeze(0), carry[:-1]), dim=0)
+        ys.append(output)
 
-        # Avoid in-place operation by reconstructing the carry tensor
-        carry = torch.cat((output.unsqueeze(0), carry[1:]), dim=0)
+    return torch.stack(ys)
 
-        ys.append(output.unsqueeze(0))
-
-    ys = torch.cat(ys, dim=0)
-
-    return ys
 
 
 @torch.jit.script
@@ -185,22 +182,30 @@ def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: ar_x_preds: An output of shape [seq_len, d_out].
     """
+    w = w.contiguous()
+    x = x.contiguous()
+
     d_out, _, k = w.shape
     seq_len = x.shape[0]
 
-    # Contract over `d_in`.
+    # Contract over `d_in` and roll using advanced indexing
     o = torch.einsum('oik,li->klo', w, x)
 
-    # For each `i` in `k`, roll the `(seq_len, d_out)` by `i` steps.
-    o = torch.stack([torch.roll(o[i], shifts=i, dims=0) for i in range(k)])
+    # Generate indices for the rolling effect
+    device = x.device
+    arange_seq = torch.arange(seq_len, device=device).unsqueeze(0)
+    arange_k = torch.arange(k, device=device).unsqueeze(1)
+    shift_indices = (arange_seq + arange_k) % seq_len
 
-    # Create a mask that zeros out nothing at `k=0`, the first `(seq_len, d_out)` at
-    # `k=1`, the first two `(seq_len, dout)`s at `k=2`, etc.
-    m = torch.triu(torch.ones((k, seq_len), device=w.device)).unsqueeze(-1)
-    m = m.expand(-1, -1, d_out)
+    # Expand indices for batch
+    expanded_indices = shift_indices.unsqueeze(-1).expand(k, seq_len, d_out)
+    rolled_o = torch.gather(o, 1, expanded_indices)
 
-    # Sum along `k`.
-    return torch.sum(o * m, dim=0)
+    # Create a mask
+    mask = torch.triu(torch.ones((k, seq_len), device=device)).unsqueeze(-1).expand(-1, -1, d_out)
+
+    # Apply the mask and sum along `k`
+    return (rolled_o * mask).sum(dim=0)
 
 
 def compute_x_tilde(
@@ -218,7 +223,8 @@ def compute_x_tilde(
     """
     eig_vals, eig_vecs = eigh
     seq_len = inputs.shape[0]
-
+    print(eig_vals.shape)
+    print(inputs.shape)
     x_tilde = conv(eig_vecs, inputs)
     x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals**0.25, 0), -1)
 

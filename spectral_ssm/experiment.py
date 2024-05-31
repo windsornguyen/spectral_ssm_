@@ -11,7 +11,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-
 class Experiment:
     """Initializes and maintains the experiment state."""
 
@@ -46,7 +45,6 @@ class Experiment:
         self.model.to(self.device)
         self.criterion = nn.CrossEntropyLoss()
 
-
     def loss_fn(
         self, outputs: torch.Tensor, targets: torch.Tensor
     ) -> tuple[torch.Tensor, dict[str, float]]:
@@ -57,17 +55,21 @@ class Experiment:
             targets (torch.Tensor): The target labels.
 
         Returns:
-            tuple[torch.Tensor, dict[str, float]]: 
+            tuple[torch.Tensor, dict[str, float]]:
               A tuple of the loss and a dictionary of metrics.
         """
         loss = self.criterion(outputs, targets)
         preds = torch.argmax(outputs, dim=1)
         accuracy = torch.mean((preds == targets).float()).item() * 100
-        metrics = {'loss': loss.item(), 'accuracy': accuracy}
+        metrics = {'loss': loss, 'accuracy': accuracy}
         return loss, metrics
 
 
-    def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
+    def step(
+        self, 
+        inputs: torch.Tensor, 
+        targets: torch.Tensor
+    ) -> dict[str, float]:
         """Perform a single training step.
 
         Args:
@@ -81,12 +83,23 @@ class Experiment:
         inputs, targets = inputs.to(self.device), targets.to(self.device)
 
         self.optimizer.zero_grad()
+
         outputs = self.model(inputs)
         loss, metrics = self.loss_fn(outputs, targets)
         loss.backward()
-        # for name, param in self.model.named_parameters():
-        #     if param.grad is None:
-        #         print(name)
+
+        # Calculate the norm of the gradients and check for unused parameters
+        grad_norms = []
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                grad_norms.append(torch.norm(param.grad)**2)
+            else:
+                print(f"Parameter {name} received no gradients.")
+
+        total_norm = torch.sum(torch.stack(grad_norms))
+        grad_norm = total_norm.sqrt()
+        metrics['grad_norm'] = grad_norm.item()
+
         self.optimizer.step()
 
         return metrics
@@ -96,22 +109,26 @@ class Experiment:
         """Evaluate the model over an entire dataset.
 
         Args:
-            dataloader (DataLoader): 
+            dataloader (DataLoader):
               A DataLoader providing batches of data for evaluation.
 
         Returns:
-            dict[str, float]: 
+            dict[str, float]:
               A dictionary of aggregated metrics over the dataset.
         """
         self.model.eval()
         losses = []
         accuracies = []
 
-        with torch.no_grad(), tqdm(
-          total=len(dataloader), desc='Evaluating model...'
-        ) as progress:
+        with (
+            torch.no_grad(),
+            tqdm(total=len(dataloader), desc='Evaluating model...') as progress,
+        ):
             for inputs, targets in dataloader:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                inputs, targets = (
+                    inputs.to(self.device),
+                    targets.to(self.device),
+                )
 
                 outputs = self.model(inputs)
                 loss, metrics = self.loss_fn(outputs, targets)

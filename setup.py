@@ -16,7 +16,7 @@ setuptools.setup(
         Spectral State Space Models. See more details in the
         [`README.md`](https://github.com/windsornguyen/spectral_ssm).
         """,
-    long_description_content_type="text/markdown",
+    long_description_content_type='text/markdown',
     author='Yagiz Devre, Evan Dogariu, Chiara von Gerlach, Isabel Liu, Windsor Nguyen, Dwaipayan Saha, Daniel Suo',
     author_email='mn4560@princeton.edu',
     url='https://github.com/windsornguyen/spectral_ssm',

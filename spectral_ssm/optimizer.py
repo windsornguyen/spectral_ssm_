@@ -15,24 +15,21 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
 
     def __init__(
         self,
-        optimizer: torch.optim.Optimizer,
-        start_val: float,
-        min_lr: float,
-        lr: float,
-        num_steps: int,
-        warmup_steps: int,
-        last_epoch: int = -1,
+        optimizer,
+        start_val,
+        min_lr,
+        lr,
+        num_steps,
+        warmup_steps,
+        last_epoch=-1,
     ):
         """Initialize a cosine decay schedule with warmup.
-
         Args:
-            optimizer (torch.optim.Optimizer): The optimizer to schedule.
-            start_val (float): The value to start at.
-            min_lr (float): The minimum value to decay to.
-            lr (float): The peak value to reach.
-            num_steps (int): The total number of steps to decay over.
-            warmup_steps (int): The number of steps to warmup for.
-            last_epoch (int): The index of the last epoch. Default is -1.
+            start_val: The value to start at.
+            min_lr: The minimum value to decay to.
+            lr: The peak value to reach.
+            num_steps: The total number of steps to decay over.
+            warmup_steps: The number of steps to warmup for.
         """
         self.start_val = start_val
         self.min_lr = min_lr
@@ -41,16 +38,19 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
         self.warmup_steps = warmup_steps
         super().__init__(optimizer, last_epoch)
 
-    def get_lr(self) -> list[float]:
-        """Get learning rate for a given step.
+    def get_lr(self):
+        """
+        Get learning rate for a given step.
+        Args:
+            itr: The current step.
 
         Returns:
-            list[float]: The learning rate for each parameter group.
+            The learning rate for the given step.
         """
         if self.last_epoch < self.warmup_steps:
             warmup_factor = self.last_epoch / self.warmup_steps
             return [
-                self.start_val + warmup_factor * (self.lr - self.start_val)
+                (self.start_val + warmup_factor * (self.lr - self.start_val))
                 for _ in self.base_lrs
             ]
 
@@ -66,42 +66,23 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
             )
         )
         return [
-            self.min_lr + (self.lr - self.min_lr) * cos_factor for _ in self.base_lrs
+            (self.min_lr + (self.lr - self.min_lr) * cos_factor) for _ in self.base_lrs
         ]
 
-    def get_last_lr(self) -> list[float]:
-        """Get last computed learning rate by the scheduler.
-
-        Returns:
-            list[float]: The last computed learning rate for each parameter group.
-        """
+    def get_last_lr(self):
+        """Get last computed learning rate by scheduler."""
         return self._last_lr
 
 
 def get_optimizer(
     model: torch.nn.Module,
-    num_steps: int = 3_500,
-    warmup_steps: int = 350,
-    learning_rate: float = 1e-3,
-    weight_decay: float = 1e-1,
+    num_steps: int = 180_000,
+    warmup_steps: int = 18_000,
+    learning_rate: float = 5e-4,
+    weight_decay: float = 0.1,
     m_y_learning_rate: float = 5e-5,
-    m_y_weight_decay: float = 0,
-) -> tuple[torch.optim.AdamW, WarmupCosineDecay]:
-    """Get the AdamW optimizer with warmup cosine decay scheduler.
-
-    Args:
-        model (torch.nn.Module): The model to optimize.
-        num_steps (int): The total number of steps to decay over.
-        warmup_steps (int): The number of steps to warmup for.
-        learning_rate (float): The peak learning rate to reach.
-        weight_decay (float): The weight decay for default parameters.
-        m_y_learning_rate (float): The learning rate for m_y parameters.
-        m_y_weight_decay (float): The weight decay for m_y parameters.
-
-    Returns:
-        tuple[torch.optim.AdamW, WarmupCosineDecay]: 
-            The AdamW optimizer and the warmup cosine decay scheduler.
-    """
+    m_y_weight_decay: float = 0.0,
+)-> tuple[torch.optim.AdamW, WarmupCosineDecay]:
     m_y_params = []
     default_params = []
     for name, param in model.named_parameters():

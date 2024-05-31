@@ -5,48 +5,96 @@
 
 """Spectral temporal unit (STU) block."""
 
-import functools
 import torch
 import torch.nn as nn
 
 from spectral_ssm import stu_utils
 
 
-@functools.partial(torch.vmap, in_dims=(None, 0, None))
-def apply_stu(
-    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    inputs: torch.Tensor,
-    eigh: tuple[torch.Tensor, torch.Tensor],
-) -> torch.Tensor:
-    """Apply STU.
+# class STU(nn.Module):
+#     """Simple STU Layer.
+
+#     Args:
+#         d_out (int): Output dimension.
+#         input_len (int): Input sequence length.
+#         num_eigh (int): Number of eigenvalues and eigenvectors to use.
+#         auto_reg_k_u (int): Auto-regressive depth on the input sequence.
+#         auto_reg_k_y (int): Auto-regressive depth on the output sequence.
+#         learnable_m_y (bool): Whether the m_y matrix is learnable.
+#         device (torch.device): The device to run the model on.
+#     """
+
+#     def __init__(
+#         self,
+#         d_out: int = 256,
+#         input_len: int = 32 * 32,  # CIFAR-10 dimensions
+#         num_eigh: int = 24,
+#         auto_reg_k_u: int = 3,
+#         auto_reg_k_y: int = 2,
+#         learnable_m_y: bool = True,
+#     ) -> None:
+#         super(STU, self).__init__()
+#         self.d_out = d_out
+#         self.input_len = input_len
+#         self.num_eigh = num_eigh
+#         self.auto_reg_k_u = auto_reg_k_u
+#         self.auto_reg_k_y = auto_reg_k_y
+#         self.learnable_m_y = learnable_m_y
+#         self.m_x_var = 1.0 / (float(self.d_out) ** 0.5)
+
+#         # Parameters and buffers
+#         if learnable_m_y:
+#             self.m_y = nn.Parameter(torch.zeros(self.d_out, self.auto_reg_k_y, self.d_out))
+#         else:
+#             self.register_buffer('m_y', torch.zeros(self.d_out, self.auto_reg_k_y, self.d_out))
+        
+#         self.m_u = nn.Parameter(
+#             stu_utils.get_random_real_matrix((self.d_out, self.d_out, self.auto_reg_k_u), self.m_x_var)
+#         )
+#         self.m_phi = nn.Parameter(torch.zeros(self.d_out * self.num_eigh, self.d_out))
+
+#         # Initialization that depends on parameters existing
+#         self.device = next(self.parameters()).device
+#         self.eigh = stu_utils.get_top_hankel_eigh(self.input_len, self.num_eigh, self.device)
+
+#     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+#         """Forward pass of the STU layer.
+
+#         Args:
+#             inputs (torch.Tensor): Input tensor of shape (B, L, d_in) where B is batch size,
+#                 L is sequence length, d_in is the number of input features (channels).
+
+#         Returns:
+#             torch.Tensor: Output tensor of shape (B, L, d_out).
+#         """
+#         def apply_stu(inputs: torch.Tensor) -> torch.Tensor:
+#             """Apply the STU transformation to the input tensor.
+
+#             Args:
+#                 inputs (torch.Tensor): Input tensor of shape (L, d_in).
+
+#             Returns:
+#                 torch.Tensor: Output tensor of shape (L, d_out).
+#             """
+#             eig_vals, eig_vecs = (eig for eig in self.eigh)
+#             x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs), self.device)
+#             delta_phi = x_tilde @ self.m_phi
+#             delta_ar_u = stu_utils.compute_ar_x_preds(self.m_u, inputs, self.device)
+#             return stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u, self.device)
+
+#         return torch.vmap(apply_stu)(inputs)
+    
+class STU(nn.Module):
+    """Simple STU Layer.
 
     Args:
-        params (tuple[torch.Tensor, torch.Tensor, torch.Tensor]): The parameters.
-        inputs (torch.Tensor): Input matrix of shape [l, d_in].
-        eigh (tuple[torch.Tensor, torch.Tensor]): Eigenvalues and eigenvectors.
-
-    Returns:
-        torch.Tensor: A sequence of y_ts of shape [l, d_out].
+        d_out (int): Output dimension.
+        input_len (int): Input sequence length.
+        num_eigh (int): Number of eigenvalues and eigenvectors to use.
+        auto_reg_k_u (int): Auto-regressive depth on the input sequence.
+        auto_reg_k_y (int): Auto-regressive depth on the output sequence.
+        learnable_m_y (bool): Whether the m_y matrix is learnable.
     """
-    device = inputs.device
-    m_y, m_u, m_phi = (param.to(device) for param in params)
-    eig_vals, eig_vecs = (eig.to(device) for eig in eigh)
-    
-    x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs))
-
-    # Compute deltas from the spectral filters, which are of shape [l, d_out].
-    delta_phi = x_tilde @ m_phi
-
-    # Compute deltas from AR on x part
-    delta_ar_u = stu_utils.compute_ar_x_preds(m_u, inputs)
-
-    # Compute y_ts, which are of shape [l, d_out].
-    return stu_utils.compute_y_t(m_y, delta_phi + delta_ar_u)
-
-
-class STU(nn.Module):
-    """Simple STU Layer."""
-
     def __init__(
         self,
         d_out: int = 256,
@@ -55,22 +103,10 @@ class STU(nn.Module):
         auto_reg_k_u: int = 3,
         auto_reg_k_y: int = 2,
         learnable_m_y: bool = True,
-        device: torch.device = None,
     ) -> None:
-        """Initialize STU layer.
-
-        Args:
-            d_out (int): Output dimension.
-            input_len (int): Input sequence length.
-            num_eigh (int): Number of eigenvalues and eigenvectors to use.
-            auto_reg_k_u (int): Auto-regressive depth on the input sequence.
-            auto_reg_k_y (int): Auto-regressive depth on the output sequence.
-            learnable_m_y (bool): Whether the m_y matrix is learnable.
-            device (torch.device): The device to run the model on.
-        """
         super(STU, self).__init__()
         self.d_out = d_out
-        self.eigh = stu_utils.get_top_hankel_eigh(input_len, num_eigh, device)
+        self.eigh = stu_utils.get_top_hankel_eigh(input_len, num_eigh)
         self.l, self.k = input_len, num_eigh
         self.auto_reg_k_u = auto_reg_k_u
         self.auto_reg_k_y = auto_reg_k_y
@@ -85,30 +121,45 @@ class STU(nn.Module):
             self.register_buffer(
                 'm_y', torch.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
             )
-        
 
-        # NOTE: Assume d_in = d_out
         self.m_u = nn.Parameter(
             stu_utils.get_random_real_matrix((d_out, d_out, auto_reg_k_u), self.m_x_var)
         )
 
         self.m_phi = nn.Parameter(torch.zeros(d_out * num_eigh, d_out))
 
-    def forward(
-        self,
-        inputs: torch.Tensor,
-    ) -> torch.Tensor:
-        """Forward pass.
+    def apply_stu(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Apply the STU transformation to the input tensor.
 
         Args:
-          inputs: Assumed to be of shape (B, L, H) where B is batch size, L is
-            sequence length, H is number of features (channels) in the input.
+            inputs (torch.Tensor): Input tensor of shape (L, d_in).
 
         Returns:
-          `torch.Tensor` of preactivations.
+            torch.Tensor: Output tensor of shape (L, d_out).
         """
-        params = (self.m_y, self.m_u, self.m_phi)
-        return apply_stu(params, inputs, self.eigh)
+        eig_vals, eig_vecs = self.eigh
+        eig_vals = eig_vals.to(inputs.device)
+        eig_vecs = eig_vecs.to(inputs.device)
+        self.m_phi = self.m_phi.to(inputs.device)
+        self.m_u = self.m_u.to(inputs.device)
+        self.m_y = self.m_y.to(inputs.device)
+        x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs))
+        delta_phi = x_tilde @ self.m_phi
+        delta_ar_u = stu_utils.compute_ar_x_preds(self.m_u, inputs)
+        return stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u)
+    
+    
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        """Forward pass of the STU layer.
+
+        Args:
+            inputs (torch.Tensor): Input tensor of shape (B, L, d_in) where B is batch size,
+                L is sequence length, d_in is the number of input features (channels).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (B, L, d_out).
+        """
+        return torch.vmap(self.apply_stu)(inputs)
 
 
 class Architecture(nn.Module):
@@ -156,9 +207,6 @@ class Architecture(nn.Module):
                         auto_reg_k_u,
                         auto_reg_k_y,
                         learnable_m_y,
-                        torch.device(
-                            "cuda" if torch.cuda.is_available() else "cpu"
-                        ),
                     ),
                     nn.GELU(),
                     nn.Dropout(dropout),
