@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets, transforms
-from typing import Tuple, Dict
+
 
 class Transform:
     """Class for normalizing images with dataset-specific statistics."""
@@ -46,17 +46,18 @@ def get_transforms(train: bool = True) -> transforms.Compose:
         augmentations = [
             # Mild cropping and padding
             transforms.RandomCrop(32, padding=4),
-
             # Mirror image across y-axis
             transforms.RandomHorizontalFlip(),
             # Mild color adjustments
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
-
+            transforms.ColorJitter(
+                brightness=0.1, contrast=0.1, saturation=0.1
+            ),
             # Small rotations
             transforms.RandomRotation(degrees=5),
-            
             # Random cutout
-            transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0)
+            transforms.RandomErasing(
+                p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0
+            ),
         ]
         return transforms.Compose(basic + augmentations)
     else:
@@ -86,6 +87,8 @@ def get_dataloader(
     dataset: Dataset,
     batch_size: int,
     distributed: bool = True,
+    rank: int = 0,
+    num_replicas: int = 1,
     num_workers: int = 1,
     pin_memory: bool = True,
 ) -> DataLoader:
@@ -96,6 +99,8 @@ def get_dataloader(
         batch_size (int): The number of samples per batch to load.
         distributed (bool, optional): If True, use DistributedSampler for
             distributed training.
+        num_replicas (int, optional): Number of processes participating in
+            distributed training.
         num_workers (int, optional): Number of subprocesses to use for data
             loading.
         pin_memory (bool, optional): If True, the data loader will copy
@@ -104,7 +109,11 @@ def get_dataloader(
     Returns:
         DataLoader: A DataLoader instance for the given dataset.
     """
-    sampler = DistributedSampler(dataset) if distributed else None
+    sampler = DistributedSampler(
+        dataset=dataset,
+        num_replicas=num_replicas, 
+        rank=rank
+    ) if distributed else None
 
     return DataLoader(
         dataset,

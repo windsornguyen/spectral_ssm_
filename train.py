@@ -3,7 +3,7 @@
 # File: train.py
 # =============================================================================#
 
-"""Training loop for physics sequence preDiction."""
+"""Training loop for physics sequence prediction."""
 
 import argparse
 import numpy as np
@@ -27,46 +27,98 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-def setup_distributed_env(local_rank: int) -> Tuple[torch.device, int, int]:
+
+# TODO: Add snapshot checkpointing logic somewhere for fault tolerance
+def setup(rank: int, world_size: int, gpus_per_node: int) -> tuple[torch.device, int, int]:
     """
-    Sets up the distributed training environment for various accelerators.
-    - Uses NCCL for NVIDIA GPUs (CUDA).
-    - Uses Gloo for CPUs and (potentially) for Apple Silicon (MPS).
+    Adapts to distributed or non-distributed training environments.
+    Chooses appropriate backend and device based on the available hardware and environment setup.
+    Manages NCCL for NVIDIA GPUs, Gloo for CPUs, and potentially Gloo for Apple Silicon (MPS).
     """
-    # Set Gloo as default backend since NCCL does not support MPS
-    backend = 'gloo'
-    device = torch.device('cpu')
+    local_rank = rank % gpus_per_node if gpus_per_node > 0 else 0
+    device = torch.device('cpu')  # Default to CPU
+    backend = 'gloo'  # Default backend
 
-    if torch.cuda.is_available():
-        torch.cuda.set_device(local_rank)
-        device = torch.device(f'cuda:{local_rank}')
-        backend = 'nccl'
+    if world_size > 1 and 'SLURM_PROCID' in os.environ:
+        if torch.cuda.is_available() and gpus_per_node > 0:
+            torch.cuda.set_device(local_rank)
+            device = torch.device(f'cuda:{local_rank}')
+            backend = 'nccl'
+            dist.init_process_group(
+                backend=backend, rank=rank, world_size=world_size
+            )
+            print(
+                f'host: {gethostname()}, rank: {rank}, local_rank: {local_rank}'
+            )
+            if rank == 0:
+                print(f'Group initialized? {dist.is_initialized()}', flush=True)
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
+            dist.init_process_group(
+                backend=backend, rank=rank, world_size=world_size
+            )
+            print(f'Using MPS on host: {gethostname()}, rank: {rank}')
+            if rank == 0:
+                print(f'Group initialized? {dist.is_initialized()}', flush=True)
+    else:
+        # Non-distributed fallback to the best available device
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+        elif torch.backends.mps.is_available():
+            device = torch.device('mps')
 
-    # NOTE: May have to run `export PYTORCH_ENABLE_MPS_FALLBACK=1`
-    # since PyTorch-MPS is not yet fully supported.
-    elif torch.backends.mps.is_available():
-        device = torch.device('mps')
-        backend = 'gloo'
+    return device, local_rank, world_size
 
-    dist.init_process_group(backend=backend, init_method='env://')
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
 
-    return device, rank, world_size
+def plot_metrics(
+    train_losses, train_accuracies, val_losses, val_accuracies, output_dir
+):
+    train_losses = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in train_losses]
+    train_accuracies = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in train_accuracies]
+    val_losses = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in val_losses]
+    val_accuracies = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in val_accuracies]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    ax1.plot(train_losses, label='Training Loss')
+    ax1.plot(val_losses, label='Validation Loss')
+    ax1.set_xlabel('Step')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Training and Validation Loss')
+    ax1.legend()
+
+    ax2.plot(train_accuracies, label='Training Accuracy')
+    ax2.plot(val_accuracies, label='Validation Accuracy')
+    ax2.set_xlabel('Step')
+    ax2.set_ylabel('Accuracy')
+    ax2.set_title('Training and Validation Accuracy')
+    ax2.legend()
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'metrics.png'))
+    plt.close()
 
 
 # To run the script: `torchrun --nproc_per_node=1 train.py`
 def main() -> None:
     parser = argparse.ArgumentParser(description='Distributed Training Setup')
-    parser.add_argument('--local_rank', type=int, default=0)
-    args = parser.parse_args()
+    parser.add_argument(
+        '--local_rank', type=int, default=0
+    )  # Might delete this
 
-    device, rank, world_size = setup_distributed_env(args.local_rank)
-    set_seed(42 + rank)
-    main_process = (rank == 0)
+    world_size = int(os.environ.get('WORLD_SIZE', 1))
+    rank = int(os.environ.get('SLURM_PROCID', 0))
+    gpus_per_node = int(os.environ.get('SLURM_GPUS_ON_NODE', 0))
+    num_workers = int(os.environ.get('SLURM_CPUS_PER_TASK', 4))
+
+    device, local_rank, world_size = setup(rank, world_size, gpus_per_node)
+    set_seed(42 + local_rank)
+    main_process = local_rank == 0
 
     if main_process:
-        print("Lyla: Greetings! I'm Lyla, your friendly neighborhood AI training assistant.")
+        print(
+            "Lyla: Greetings! I'm Lyla, your friendly neighborhood AI training assistant."
+        )
 
     # Hyperparameters
     train_batch_size: int = 10 // world_size # scale batch size for distributed training
@@ -85,32 +137,36 @@ def main() -> None:
 
     # Define the model
     spectral_ssm = model.Architecture(
-        d_model=256,
+        d_model=37,
         d_target=29,
         num_layers=6,
         dropout=0.1,
-        input_len=1000 * 37,
+        input_len=37,
         num_eigh=24,
         auto_reg_k_u=3,
         auto_reg_k_y=2,
         learnable_m_y=True,
     ).to(device)
 
-    # Wrap the model with DistributedDataParallel for distributed training
-    spectral_ssm = torch.nn.SyncBatchNorm.convert_sync_batchnorm(spectral_ssm)
-    spectral_ssm = DDP(
-        spectral_ssm,
-        device_ids=[args.local_rank],
-        output_device=args.local_rank,
-        
-        # TODO: There is a dead neuron for some reason...
-            # module.layers.0.0.m_u
-        # TODO: Removing this parameter results in error in distributed training
-        find_unused_parameters=True,
-    )
 
+    # Wrap the model with DistributedDataParallel for distributed training
+    # TODO: Distributed code is not ready yet
+    if world_size > 1:
+        # Needed only if using BatchNorm during distributed training
+        # spectral_ssm = torch.nn.SyncBatchNorm.convert_sync_batchnorm(spectral_ssm)
+        spectral_ssm = DDP(
+            spectral_ssm,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            # TODO: There is a dead neuron for some reason...
+            # module.layers.0.0.m_u
+            # TODO: Removing this parameter results in error in distributed training
+            # find_unused_parameters=False,
+        )
+
+    spectral_ssm = spectral_ssm.module if world_size > 1 else spectral_ssm
     opt, scheduler = optimizer.get_optimizer(
-        spectral_ssm.module,
+        spectral_ssm,
         num_steps=num_steps,
         warmup_steps=warmup_steps,
         learning_rate=learning_rate,
@@ -130,9 +186,8 @@ def main() -> None:
         else:
             print(f'{msg} {device} today.')
 
-    train_loader = physics_data.get_dataloader('input_data.npy', 'target_data.npy', 10)
-
-    eval_loader = physics_data.get_dataloader('input_data_eval.npy', 'target_data_eval.npy', 10)
+    train_loader = physics_data.get_dataloader('spectral_ssm/input_data.npy', 'spectral_ssm/target_data.npy', 10)
+    eval_loader = physics_data.get_dataloader('spectral_ssm/input_data_eval.npy', 'spectral_ssm/target_data_eval.npy', 10)
 
     if main_process:
         print(
@@ -212,7 +267,7 @@ def main() -> None:
                     checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
                     best_checkpoint = checkpoint_filename
                     
-                    torch.save(spectral_ssm.module.state_Dict(), checkpoint_path)
+                    torch.save(spectral_ssm.state_dict(), checkpoint_path)
                     print(
                         f'Lyla: Wow! We have a new personal best at step {global_step}.'
                         f' The validation loss improved to: {val_loss:.4f}!'
@@ -235,7 +290,7 @@ def main() -> None:
 
     # Load the best model checkpoint
     best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)
-    spectral_ssm.module.load_state_Dict(torch.load(best_checkpoint_path))
+    spectral_ssm.load_state_dict(torch.load(best_checkpoint_path))
 
     # Print detailed information about the best model
     if main_process:

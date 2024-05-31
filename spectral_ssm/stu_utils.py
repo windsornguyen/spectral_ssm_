@@ -7,12 +7,11 @@
 
 import torch
 import torch.nn.functional as F
-from typing import Tuple, Dict, List
+
 
 @torch.jit.script
 def get_hankel_matrix(
     n: int, 
-    device: torch.device
 ) -> torch.Tensor:
     """Generate a spectral Hankel matrix.
 
@@ -22,7 +21,7 @@ def get_hankel_matrix(
     Returns:
         torch.Tensor: A spectral Hankel matrix of shape [n, n].
     """
-    indices = torch.arange(1, n + 1, device=device)
+    indices = torch.arange(1, n + 1)
     sum_indices = indices[:, None] + indices[None, :]
     z = 2 / (sum_indices ** 3 - sum_indices)
     return z
@@ -32,8 +31,7 @@ def get_hankel_matrix(
 def get_top_hankel_eigh(
     n: int, 
     k: int, 
-    device: torch.device
-) -> Tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
 
     Args:
@@ -41,16 +39,16 @@ def get_top_hankel_eigh(
         k (int): Number of eigenvalues to return.
 
     Returns:
-        Tuple[torch.Tensor, torch.Tensor]: A Tuple of eigenvalues of shape [k,] and 
+        tuple[torch.Tensor, torch.Tensor]: A tuple of eigenvalues of shape [k,] and 
             eigenvectors of shape [n, k].
     """
-    eig_vals, eig_vecs = torch.linalg.eigh(get_hankel_matrix(n, device=device))
+    eig_vals, eig_vecs = torch.linalg.eigh(get_hankel_matrix(n))
     return eig_vals[-k:], eig_vecs[:, -k:]
 
 
 @torch.jit.script
 def get_random_real_matrix(
-    shape: List[int],
+    shape: list[int],
     scaling: float,
     lower: float = -2.0,
     upper: float = 2.0,
@@ -84,9 +82,7 @@ def shift(x: torch.Tensor) -> torch.Tensor:
         torch.Tensor: A tensor of shape [seq_len, d] where index [0, :] is all zeros and 
             [i, :] is equal to x[i - 1, :] for i > 0.
     """
-    result = torch.zeros_like(x)
-    result[1:] = x[:-1]
-    return result
+    return torch.cat([torch.zeros_like(x[:1]), x[:-1]], dim=0)
 
 
 @torch.jit.script
@@ -112,7 +108,7 @@ def tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     # Padding for FFT efficiency (lengths that are powers of two perform best)
     v_padded = F.pad(v, (0, padded_len - seq_len))
     u_padded = F.pad(u, (0, padded_len - seq_len))
-    
+
     # FFT and element-wise multiplication for convolution
     v_fft = torch.fft.rfft(v_padded)
     u_fft = torch.fft.rfft(u_padded)
@@ -138,13 +134,21 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: A matrix of shape [seq_len, k, d_in].
     """
+    seq_len, k = v.shape
+    d_in = u.shape[0]
+    
+    # Reshape u to [seq_len, d_in]
+    u = u.unsqueeze(0).expand(seq_len, d_in)
+    
     # Convolve each sequence of length `seq_len` in v with each sequence in u.
     mvconv = torch.vmap(tr_conv, in_dims=(1, None), out_dims=1)
     mmconv = torch.vmap(mvconv, in_dims=(None, 1), out_dims=-1)
-    return mmconv(v, u)
+    out = mmconv(v, u)
+
+    return out
 
 
-@torch.jit.script
+
 def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     """Compute sequence of y_t given a series of deltas and m_y via a simple scan.
 
@@ -157,21 +161,15 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
         torch.Tensor: A matrix of shape [seq_len, d_out].
     """
     d_out, k, _ = m_y.shape
-    carry = torch.zeros((k, d_out), device=deltas.device)
+    carry = torch.zeros((k, d_out), device=m_y.device)
     ys = []
 
     for x in deltas:
         output = torch.tensordot(m_y, carry, dims=2) + x
-        carry = torch.roll(carry, 1, dims=0)
-
-        # Avoid in-place operation by reconstructing the carry tensor
-        carry = torch.cat((output.unsqueeze(0), carry[1:]), dim=0)
-
-        ys.append(output.unsqueeze(0))
-
-    ys = torch.cat(ys, dim=0)
-
-    return ys
+        carry = torch.cat((output.unsqueeze(0), carry[:-1]), dim=0)
+        ys.append(output)
+    out = torch.stack(ys)
+    return out
 
 
 @torch.jit.script
@@ -185,42 +183,49 @@ def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: ar_x_preds: An output of shape [seq_len, d_out].
     """
-    d_out, _, k = w.shape
+    d_out, d_in, k = w.shape
     seq_len = x.shape[0]
 
-    # Contract over `d_in`.
+    # Add a new dimension to x to match the equation
+    x = x.unsqueeze(1)
+
+    # Contract over `d_in`
     o = torch.einsum('oik,li->klo', w, x)
 
-    # For each `i` in `k`, roll the `(seq_len, d_out)` by `i` steps.
+    # For each `i` in `k`, roll the `(seq_len, d_out)` by `i` steps
     o = torch.stack([torch.roll(o[i], shifts=i, dims=0) for i in range(k)])
 
     # Create a mask that zeros out nothing at `k=0`, the first `(seq_len, d_out)` at
     # `k=1`, the first two `(seq_len, dout)`s at `k=2`, etc.
-    m = torch.triu(torch.ones((k, seq_len), device=w.device)).unsqueeze(-1)
-    m = m.expand(-1, -1, d_out)
+    m = torch.triu(torch.ones((k, seq_len), device=w.device))
+    m = m.unsqueeze(-1)
+    m = m.expand((k, seq_len, d_out))
 
-    # Sum along `k`.
+    # Mask and sum along `k`
     return torch.sum(o * m, dim=0)
 
 
 def compute_x_tilde(
-    inputs: torch.Tensor, eigh: Tuple[torch.Tensor, torch.Tensor]
+    inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
 ) -> torch.Tensor:
     """Compute the x_tilde component of spectral SSM.
 
     Args:
         inputs (torch.Tensor): A tensor of shape [seq_len, d_in].
-        eigh (Tuple[torch.Tensor, torch.Tensor]): A Tuple of eigenvalues of shape [k,] and 
+        eigh (tuple[torch.Tensor, torch.Tensor]): A tuple of eigenvalues of shape [k,] and 
             eigenvectors of shape [seq_len, k].
 
     Returns:
         torch.Tensor: x_tilde: A tensor of shape [seq_len, k * d_in].
     """
     eig_vals, eig_vecs = eigh
+    # print("compute_x_tilde - eig_vals:", eig_vals)
+    # print("compute_x_tilde - eig_vecs:", eig_vecs)
+    print("compute_x_tilde - inputs:", inputs)
     seq_len = inputs.shape[0]
-
     x_tilde = conv(eig_vecs, inputs)
     x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals**0.25, 0), -1)
+    # print("compute_x_tilde - x_tilde after operations:", x_tilde)
 
     # This shift is introduced as the rest is handled by the AR part.
     return shift(shift(x_tilde.reshape((seq_len, -1))))
