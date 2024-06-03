@@ -31,7 +31,7 @@ class PhysicsDataset(Dataset):
 
         return x_t, x_t_plus_1
 
-def get_dataloader(input_file, target_file, batch_size, shuffle=True, num_workers=1):
+def get_dataloader(input_file, target_file, batch_size, shuffle=False, num_workers=1):
     """Create a DataLoader for the given dataset."""
     dataset = PhysicsDataset(input_file, target_file)
     return DataLoader(

@@ -142,6 +142,7 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     return out
 
 
+@torch.jit.script
 def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     """Compute sequence of y_t given a series of deltas and m_y via a simple scan.
 

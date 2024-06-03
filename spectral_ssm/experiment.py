@@ -1,3 +1,4 @@
+
 # ==============================================================================#
 # Authors: Windsor Nguyen, Dwaipayan Saha
 # File: experiment.py
@@ -70,7 +71,7 @@ class Experiment:
 
         total_loss = total_loss / outputs.shape[1]
         metrics = {'loss': total_loss.item()}
-        print(f'Total Scaled Loss: {total_loss.item()}')
+        # print(f'Total Scaled Loss: {total_loss.item()}')
 
         return total_loss, metrics
 

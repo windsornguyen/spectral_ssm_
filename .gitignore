@@ -16,6 +16,9 @@ ssm_env/
 # Testing (internal)
 tests/
 
+# Data to test Transformer with
+transformer/data/
+
 # Training artifacts
 *.slurm
 checkpoints/
