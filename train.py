@@ -123,9 +123,9 @@ def main() -> None:
     # Hyperparameters
     train_batch_size: int = 10 // world_size # scale batch size for distributed training
     eval_batch_size: int = 10 // world_size  # scale batch size for distributed training
-    num_steps: int = 3_500 // 6
+    num_steps: int = 3_500 // 12
     eval_period: int = 25
-    warmup_steps: int = 350 // 6
+    warmup_steps: int = 350 // 12
     learning_rate: float = 5e-4
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
@@ -186,8 +186,8 @@ def main() -> None:
         else:
             print(f'{msg} {device} today.')
 
-    train_loader = physics_data.get_dataloader('spectral_ssm/input_data.npy', 'spectral_ssm/target_data.npy', 5)
-    eval_loader = physics_data.get_dataloader('spectral_ssm/input_data_eval.npy', 'spectral_ssm/target_data_eval.npy', 5)
+    train_loader = physics_data.get_dataloader('spectral_ssm/input_data.npy', 'spectral_ssm/target_data.npy', train_batch_size)
+    eval_loader = physics_data.get_dataloader('spectral_ssm/input_data_eval.npy', 'spectral_ssm/target_data_eval.npy', eval_batch_size)
 
     if main_process:
         print(

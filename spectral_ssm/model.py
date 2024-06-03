@@ -9,7 +9,7 @@ import functools
 import torch
 import torch.nn as nn
 from spectral_ssm import stu_utils
-
+import time
 
 class STU(nn.Module):
     """Simple STU Layer.
@@ -51,20 +51,13 @@ class STU(nn.Module):
             )
 
         self.m_u = nn.Parameter(
-            stu_utils.get_random_real_matrix((d_out, d_out, auto_reg_k_u), self.m_x_var)
+            stu_utils.get_random_real_matrix((self.d_out, self.d_out, self.auto_reg_k_u), self.m_x_var)
         )
 
-        self.m_phi = nn.Parameter(torch.zeros(d_out * num_eigh, d_out))
+        self.m_phi = nn.Parameter(torch.zeros(self.d_out * self.k, self.d_out))
 
-    def apply_stu(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Apply the STU transformation to the input tensor.
-
-        Args:
-            inputs (torch.Tensor): Input tensor of shape (L, d_in).
-
-        Returns:
-            torch.Tensor: Output tensor of shape (L, d_out).
-        """
+    def apply_stu(self, inputs):
+        # start_time = time.time()  # Start timing
         eig_vals, eig_vecs = self.eigh
         eig_vals = eig_vals.to(inputs.device)
         eig_vecs = eig_vecs.to(inputs.device)
@@ -73,102 +66,64 @@ class STU(nn.Module):
         self.m_y = self.m_y.to(inputs.device)
 
         x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs))
+        # print(f"Time for x_tilde computation: {time.time() - start_time:.4f}s")
+        # start_time = time.time()  # Reset timing
+
         delta_phi = x_tilde @ self.m_phi
+        # print(f"Time for delta_phi computation: {time.time() - start_time:.4f}s")
+        # start_time = time.time()  # Reset timing
+
         delta_ar_u = stu_utils.compute_ar_x_preds(self.m_u, inputs)
+        # print(f"Time for delta_ar_u computation: {time.time() - start_time:.4f}s")
+        # start_time = time.time()  # Reset timing
+
         y_t = stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u)
+        # print(f"Time for y_t computation: {time.time() - start_time:.4f}s")
 
         return y_t
 
-
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the STU layer.
-
-        Args:
-            inputs (torch.Tensor): Input tensor of shape (B, L, d_in) where B is batch size,
-                L is sequence length, d_in is the number of input features (channels).
-
-        Returns:
-            torch.Tensor: Output tensor of shape (B, L, d_out).
-        """
-        return torch.vmap(self.apply_stu)(inputs)
-
+    def forward(self, inputs):
+        # start_time = time.time()  # Start timing for forward method
+        output = torch.vmap(self.apply_stu)(inputs)
+        # print(f"Total time for STU forward pass: {time.time() - start_time:.4f}s")
+        return output
 
 class Architecture(nn.Module):
-    """
-    General model architecture.
-    """
-
-    def __init__(
-        self,
-        d_model=37,
-        d_target=29,
-        num_layers=6,
-        dropout=0.1,
-        input_len=1000,
-        num_eigh=24,
-        auto_reg_k_u=3,
-        auto_reg_k_y=2,
-        learnable_m_y=True,
-    ):
-        """Initialize general model architecture.
-
-        Args:
-          d_model: Dimension of the embedding.
-          d_target: Dimension of the target.
-          num_layers: Number of layers.
-          dropout: Dropout rate.
-          input_len: Input sequence length.
-          num_eigh: Number of eigenvalues and eigenvectors to use.
-          auto_reg_k_u: Auto-regressive depth on the input sequence.
-          auto_reg_k_y: Auto-regressive depth on the output sequence.
-          learnable_m_y: Whether the m_y matrix is learnable.
-        """
+    """General model architecture."""
+    def __init__(self, d_model, d_target, num_layers, dropout, input_len, num_eigh, auto_reg_k_u, auto_reg_k_y, learnable_m_y):
         super(Architecture, self).__init__()
         self.embedding = nn.Linear(d_model, d_model)
-        self.layer_norms = nn.ModuleList(
-            [nn.LayerNorm(d_model) for _ in range(num_layers)]
-        )
-        self.layers = nn.ModuleList(
-            [
-                nn.Sequential(
-                    STU(
-                        d_model,
-                        input_len,
-                        num_eigh,
-                        auto_reg_k_u,
-                        auto_reg_k_y,
-                        learnable_m_y,
-                    ),
-                    nn.GELU(),
-                    nn.Dropout(dropout),
-                    nn.Linear(d_model, 2 * d_model),
-                    nn.GLU(dim=-1),
-                    nn.Dropout(dropout),
-                )
-                for _ in range(num_layers)
-            ]
-        )
-
+        self.layer_norms = nn.ModuleList([nn.LayerNorm(d_model) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([
+            nn.Sequential(
+                STU(d_model, input_len, num_eigh, auto_reg_k_u, auto_reg_k_y, learnable_m_y),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model, 2 * d_model),
+                nn.GLU(dim=-1),
+                nn.Dropout(dropout),
+            ) for _ in range(num_layers)
+        ])
         self.projection = nn.Linear(d_model, d_target)
 
-
     def forward(self, inputs):
-        """Forward pass.
-
-        Args:
-          inputs: Input tensor of shape (B, C, H, W),
-            where B is the batch size, C is the number of channels,
-            H is the height, and W is the width.
-
-        Returns:
-          Output tensor of shape (B, d_target), where d_target is the target dimension.
-        """
+        # start_time = time.time()  # Start timing for the embedding operation
         x = self.embedding(inputs)
+        # print(f"Time for embedding: {time.time() - start_time:.4f}s")
+        total_layer_time = 0
 
         for i, layer in enumerate(self.layers):
+            # start_time = time.time()  # Start timing for each layer
             z = x
             x = self.layer_norms[i](x)
             x = layer(x)
             x = x + z
+            # layer_time = time.time() - start_time
+            # total_layer_time += layer_time
+            # print(f"Time for layer {i}: {layer_time:.4f}s")
 
-        return self.projection(x)
+        # print(f"Total time for all layers: {total_layer_time:.4f}s")
+        start_time = time.time()  # Start timing for the final projection
+        output = self.projection(x)
+        # print(f"Time for final projection: {time.time() - start_time:.4f}s")
+        return output

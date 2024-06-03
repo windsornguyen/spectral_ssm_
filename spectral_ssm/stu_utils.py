@@ -19,13 +19,13 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
     Returns:
         torch.Tensor: A spectral Hankel matrix of shape [n, n].
     """
-    indices = torch.arange(1, n + 1)
-    sum_indices = indices[:, None] + indices[None, :]
-    z = 2 / (sum_indices ** 3 - sum_indices)
+    indices = torch.arange(1, n + 1) # -> [n]
+    sum_indices = indices[:, None] + indices[None, :] # -> [n, n]
+    z = 2 / (sum_indices ** 3 - sum_indices) # -> [n, n]
     return z
 
 
-@torch.jit.script
+
 def get_top_hankel_eigh(
     n: int, 
     k: int, 
@@ -41,9 +41,9 @@ def get_top_hankel_eigh(
         tuple[torch.Tensor, torch.Tensor]: A tuple of eigenvalues of shape [k,] and 
             eigenvectors of shape [n, k].
     """
-    hankel_matrix = get_hankel_matrix(n).to(device)
-    eig_vals, eig_vecs = torch.linalg.eigh(hankel_matrix)
-    return eig_vals[-k:], eig_vecs[:, -k:]
+    hankel_matrix = get_hankel_matrix(n).to(device) # -> [n, n]
+    eig_vals, eig_vecs = torch.linalg.eigh(hankel_matrix) # -> [n], [n, n]
+    return eig_vals[-k:], eig_vecs[:, -k:] # -> ([k], [n, k])
 
 
 @torch.jit.script
@@ -67,8 +67,8 @@ def get_random_real_matrix(
         torch.Tensor: A random real matrix scaled by the specified factor.
     """
     random = torch.randn(shape)
-    random_clamped = torch.clamp(random, min=lower, max=upper)
-    return scaling * random_clamped
+    clamped = torch.clamp(random, min=lower, max=upper)
+    return scaling * clamped
 
 
 @torch.jit.script
@@ -142,7 +142,6 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     return out
 
 
-
 def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     """Compute sequence of y_t given a series of deltas and m_y via a simple scan.
 
@@ -155,15 +154,21 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
         torch.Tensor: A matrix of shape [seq_len, d_out].
     """
     d_out, k, _ = m_y.shape
-    carry = torch.zeros((k, d_out), device=m_y.device)
+    carry = torch.zeros((k, d_out), device=deltas.device)
     ys = []
 
     for x in deltas:
         output = torch.tensordot(m_y, carry, dims=2) + x
-        carry = torch.cat((output.unsqueeze(0), carry[:-1]), dim=0)
-        ys.append(output)
-    out = torch.stack(ys)
-    return out
+        carry = torch.roll(carry, 1, dims=0)
+
+        # Avoid in-place operation by reconstructing the carry tensor
+        carry = torch.cat((output.unsqueeze(0), carry[1:]), dim=0)
+
+        ys.append(output.unsqueeze(0))
+
+    ys = torch.cat(ys, dim=0)
+
+    return ys
 
 
 @torch.jit.script
