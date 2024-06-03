@@ -186,8 +186,8 @@ def main() -> None:
         else:
             print(f'{msg} {device} today.')
 
-    train_loader = physics_data.get_dataloader('spectral_ssm/input_data.npy', 'spectral_ssm/target_data.npy', 10)
-    eval_loader = physics_data.get_dataloader('spectral_ssm/input_data_eval.npy', 'spectral_ssm/target_data_eval.npy', 10)
+    train_loader = physics_data.get_dataloader('spectral_ssm/input_data.npy', 'spectral_ssm/target_data.npy', 5)
+    eval_loader = physics_data.get_dataloader('spectral_ssm/input_data_eval.npy', 'spectral_ssm/target_data_eval.npy', 5)
 
     if main_process:
         print(

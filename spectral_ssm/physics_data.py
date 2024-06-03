@@ -12,8 +12,9 @@ class PhysicsDataset(Dataset):
             input_file (str): Path to the numpy file containing inputs.
             target_file (str): Path to the numpy file containing targets.
         """
-        self.inputs = np.load(input_file)  # Shape (n, 1000, 37), for testing n=10
+        self.inputs = np.load(input_file)  # Shape (n, 1000, 37), for testing n=5
         self.targets = np.load(target_file)  # Shape (n, 1000, 29)
+        print(f"inputs shape: {self.inputs.shape}, targets shape: {self.targets.shape}")
 
     def __len__(self):
         """Denotes the total number of samples."""
@@ -21,8 +22,8 @@ class PhysicsDataset(Dataset):
 
     def __getitem__(self, index):
         """Generates one sample of data."""
-        x_t = self.inputs[index]  # Current state and action
-        x_t_plus_1 = self.targets[index]  # Next state
+        x_t = self.inputs[index, :, :]  # Current state and action for entire trajectory
+        x_t_plus_1 = self.targets[index, :, :]  # Next state for entire trajectory
 
         # Convert to tensors
         x_t = torch.tensor(x_t, dtype=torch.float32)
