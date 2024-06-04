@@ -48,7 +48,12 @@ class Walker2DLoss(nn.Module):
 
                 total_loss += loss.mean()
 
-            total_loss = total_loss / outputs.shape[1]
+            total_loss /= outputs.shape[1]
+            coordinate_loss /= 2
+            angle_loss /= 7
+            coordinate_velocity_loss /= 2
+            angular_velocity_loss /= 7
+
             metrics = {'loss': total_loss.item(), 'coordinate_loss': coordinate_loss.item(), 'angle_loss': angle_loss.item(), 'coordinate_velocity_loss': coordinate_velocity_loss.item(), 'angular_velocity_loss': angular_velocity_loss.item()}
 
             return total_loss, metrics

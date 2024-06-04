@@ -13,7 +13,7 @@ def main():
     batch_size = 5  # how many independent sequences will we process in parallel?
     max_len = 1_000  # what is the maximum context length for predictions?
     max_iters = 3_500 // 6
-    eval_interval = 25
+    eval_interval = 50
     learning_rate = 1e-3
     device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
     print('Running on device:', device)
@@ -86,15 +86,7 @@ def main():
 
     pbar = tqdm(range(max_iters), desc='Training', unit='iter')
     val_loss = None
-    for step, (xb, yb) in zip(pbar, train_loader):
-        # Store total training loss and losses specific to each observation feature
-        train_losses.append(loss.item())
-        coord_losses.append(metrics['coordinate_loss'])
-        orient_losses.append(metrics['orientation_loss'])
-        angle_losses.append(metrics['angle_loss'])
-        coord_vel_losses.append(metrics['coordinate_velocity_loss'])
-        ang_vel_losses.append(metrics['angular_velocity_loss'])
-        
+    for step, (xb, yb) in zip(pbar, train_loader):    
         # every once in a while evaluate the loss on train and val sets
         if (step != 0 and step % eval_interval == 0) or step == max_iters - 1:
             val_loss = evaluate(val_loader)
@@ -114,6 +106,14 @@ def main():
         xb, yb = xb.to(device), yb.to(device)
         preds, loss = model(xb, yb)
         loss, metrics = loss
+
+        # Store total training loss and losses specific to each observation feature
+        train_losses.append(loss.item())
+        coord_losses.append(metrics['coordinate_loss'])
+        orient_losses.append(metrics['orientation_loss'])
+        angle_losses.append(metrics['angle_loss'])
+        coord_vel_losses.append(metrics['coordinate_velocity_loss'])
+        ang_vel_losses.append(metrics['angular_velocity_loss'])
 
         # Check if any inputs, outputs or weights contain NaNs
         if torch.isnan(preds).any() or torch.isnan(loss):
@@ -137,14 +137,14 @@ def main():
                     print(f"NaN gradient in {name}")
         grad_norm = grad_norm ** 0.5
         pbar.set_postfix({
-            'Training Loss': loss.item(),
-            'Validation Loss': val_loss,
-            'Gradient Norm': grad_norm,
-            'Coordinate Loss': metrics['coordinate_loss'],
-            'Orientation Loss': metrics['orientation_loss'],
-            'Angle Loss': metrics['angle_loss'],
-            'Coordinate Velocity Loss': metrics['coordinate_velocity_loss'],
-            'Angular Velocity Loss': metrics['angular_velocity_loss']
+            'tr_loss': loss.item(),
+            'val_loss': val_loss,
+            'grd_nrm': grad_norm,
+            'coord_loss': metrics['coordinate_loss'],
+            'orient_loss': metrics['orientation_loss'],
+            'angle_loss': metrics['angle_loss'],
+            'coord_vel_loss': metrics['coordinate_velocity_loss'],
+            'angle_vel_loss': metrics['angular_velocity_loss']
         })
 
         optimizer.step()

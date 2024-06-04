@@ -360,7 +360,7 @@ def main() -> None:
             f' Details are saved in {training_details}.'
             ' It was a pleasure assisting you. Until next time!'
         )
-    
+
     # After training, plot the losses
     plot_metrics(train_losses, val_losses, coord_losses, orient_losses, 
     angle_losses, coord_vel_losses, ang_vel_losses, 'plots/')

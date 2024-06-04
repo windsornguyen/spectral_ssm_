@@ -59,7 +59,13 @@ class AntLoss(nn.Module):
 
             total_loss += loss.mean()
 
-        total_loss = total_loss / outputs.shape[1]
+        total_loss /= outputs.shape[1]
+        coordinate_loss /= 3
+        orientation_loss /= 4
+        angle_loss /= 8
+        coordinate_velocity_loss /= 6
+        angular_velocity_loss /= 8
+
         metrics = {'loss': total_loss.item(), 'coordinate_loss': coordinate_loss.item(), 'orientation_loss': orientation_loss.item(), 'angle_loss': angle_loss.item(), 'coordinate_velocity_loss': coordinate_velocity_loss.item(), 'angular_velocity_loss': angular_velocity_loss.item()}
 
         return total_loss, metrics
