@@ -13,9 +13,6 @@ ssm_env/
 # Linter cache
 .ruff_cache/
 
-# Testing (internal)
-tests/
-
 # Data to test Transformer with
 transformer/data/
 
