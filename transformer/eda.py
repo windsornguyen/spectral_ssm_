@@ -16,50 +16,50 @@ print("Target Data Shape:", target_data.shape)
 print("Input Data Sample:", input_data[:5])
 print("Target Data Sample:", target_data[:5])
 
-# Plot some samples
-plt.figure(figsize=(10, 4))
-plt.subplot(1, 2, 1)
-plt.hist(input_data.ravel(), bins=50)
-plt.title('Input Data Distribution')
+# # Plot some samples
+# plt.figure(figsize=(10, 4))
+# plt.subplot(1, 2, 1)
+# plt.hist(input_data.ravel(), bins=50)
+# plt.title('Input Data Distribution')
 
-plt.subplot(1, 2, 2)
-plt.hist(target_data.ravel(), bins=50)
-plt.title('Target Data Distribution')
+# plt.subplot(1, 2, 2)
+# plt.hist(target_data.ravel(), bins=50)
+# plt.title('Target Data Distribution')
 
-plt.show()
+# plt.show()
 
-# Split data into train and validation sets
-X_train, X_val, y_train, y_val = train_test_split(input_data, target_data, test_size=0.2, random_state=42)
+# # Split data into train and validation sets
+# X_train, X_val, y_train, y_val = train_test_split(input_data, target_data, test_size=0.2, random_state=42)
 
-# Save the split data to .npy files
-dataset = 'Walker2D'
-data_dir = os.path.join('data', dataset)
-os.makedirs(data_dir, exist_ok=True)
+# # Save the split data to .npy files
+# dataset = 'Walker2D'
+# data_dir = os.path.join('data', dataset)
+# os.makedirs(data_dir, exist_ok=True)
 
-np.save(os.path.join(data_dir, 'train_inputs.npy'), X_train)
-np.save(os.path.join(data_dir, 'train_targets.npy'), y_train)
-np.save(os.path.join(data_dir, 'val_inputs.npy'), X_val)
-np.save(os.path.join(data_dir, 'val_targets.npy'), y_val)
+# np.save(os.path.join(data_dir, 'train_inputs.npy'), X_train)
+# np.save(os.path.join(data_dir, 'train_targets.npy'), y_train)
+# np.save(os.path.join(data_dir, 'val_inputs.npy'), X_val)
+# np.save(os.path.join(data_dir, 'val_targets.npy'), y_val)
 
-# Modified function to load data from the new .npy files
-def get_batch(split):
-    if split == 'train':
-        inputs = np.load(os.path.join(data_dir, 'train_inputs.npy'))
-        targets = np.load(os.path.join(data_dir, 'train_targets.npy'))
-    else:
-        inputs = np.load(os.path.join(data_dir, 'val_inputs.npy'))
-        targets = np.load(os.path.join(data_dir, 'val_targets.npy'))
+# # Modified function to load data from the new .npy files
+# def get_batch(split):
+#     if split == 'train':
+#         inputs = np.load(os.path.join(data_dir, 'train_inputs.npy'))
+#         targets = np.load(os.path.join(data_dir, 'train_targets.npy'))
+#     else:
+#         inputs = np.load(os.path.join(data_dir, 'val_inputs.npy'))
+#         targets = np.load(os.path.join(data_dir, 'val_targets.npy'))
 
-    ix = np.random.randint(0, len(inputs) - ctxt_len, batch_size)
-    x = np.stack([inputs[i:i+ctxt_len] for i in ix])
-    y = np.stack([targets[i+1:i+1+ctxt_len] for i in ix])
+#     ix = np.random.randint(0, len(inputs) - ctxt_len, batch_size)
+#     x = np.stack([inputs[i:i+ctxt_len] for i in ix])
+#     y = np.stack([targets[i+1:i+1+ctxt_len] for i in ix])
 
-    x = torch.from_numpy(x).long()
-    y = torch.from_numpy(y).long()
+#     x = torch.from_numpy(x).long()
+#     y = torch.from_numpy(y).long()
 
-    if device == 'cuda':
-        x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
-    else:
-        x, y = x.to(device), y.to(device)
+#     if device == 'cuda':
+#         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+#     else:
+#         x, y = x.to(device), y.to(device)
     
-    return x, y
+#     return x, y

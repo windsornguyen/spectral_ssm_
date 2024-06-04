@@ -1,17 +1,17 @@
 # ==============================================================================#
 # Authors: Isabel Liu
-# File: loss_cheetah.py
+# File: loss_walker.py
 # ==============================================================================#
 
-"""Customized Loss for HalfCheetah-v1 Task."""
+"""Customized Loss for Walker2D-v1 Task."""
 
 import torch
 import torch.nn as nn
 from typing import Tuple, Dict
 
-class HalfCheetahLoss(nn.Module):
+class Walker2DLoss(nn.Module):
     def __init__(self):
-        super(HalfCheetahLoss, self).__init__()
+        super(Walker2DLoss, self).__init__()
 
     def forward(
         outputs: torch.Tensor, 

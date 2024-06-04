@@ -7,14 +7,20 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
 
+import sys
+sys.path.append('..')
+
 import math
-import inspect
 from dataclasses import dataclass
 from typing import Tuple, Dict
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+
+from spectral_ssm.loss_ant import AntLoss
+from spectral_ssm.loss_cheetah import HalfCheetahLoss
+from spectral_ssm.loss_walker import Walker2DLoss
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -117,55 +123,6 @@ class Block(nn.Module):
         return x
 
 
-class AntLoss(nn.Module):
-    def __init__(self):
-        super(AntLoss, self).__init__()
-
-    def forward(
-        self, 
-        outputs: torch.Tensor, 
-        targets: torch.Tensor
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """Compute the loss and metrics for a batch of data.
-
-        Args:
-            outputs (torch.Tensor): The model outputs of shape (batch_size, seq_len, d_xt)
-            targets (torch.Tensor): The target labels of shape (batch_size, seq_len, d_xt)
-
-        Returns:
-            Tuple[torch.Tensor, Dict[str, float]]: 
-            A Tuple of the loss and a dictionary of metrics.
-        """
-        total_loss = torch.tensor(0.0, device=outputs.device)
-        for i in range(outputs.shape[1]):
-            loss = (outputs[:, i] - targets[:, i]) ** 2
-
-            # scaling by constant just for now
-            if i in (0, 1, 2):  # coordinates of the torso (center)
-                loss /= 5
-                # print(f'Index {i}, Coordinate Loss Scale /5: {loss.mean().item()}')
-            elif i in (3, 4, 5, 6):  # orientations of the torso (center)
-                loss /= 0.2
-                # print(f'Index {i}, Orientation Loss Scale /0.2: {loss.mean().item()}')
-            elif i in (7, 8, 9, 10, 11, 12, 13, 14):  # angles between the torso and the links
-                loss /= 0.5
-                # print(f'Index {i}, Angle Loss Scale /0.5: {loss.mean().item()}')
-            elif i in (15, 16, 17, 18, 19, 20):  # coordinate and coordinate angular velocities of the torso (center)
-                loss /= 2
-                # print(f'Index {i}, Velocity Loss Scale /2: {loss.mean().item()}')
-            elif i in (21, 22, 23, 24, 25, 26, 27, 28):  # angular velocities of the angles between the torso and the links
-                loss /= 5
-                # print(f'Index {i}, Angular Velocity Loss Scale /5: {loss.mean().item()}')
-
-            total_loss += loss.mean()
-
-        total_loss = total_loss / outputs.shape[1]
-        metrics = {'loss': total_loss.item()}
-        # print(f'Total Scaled Loss: {total_loss.item()}')
-
-        return total_loss, metrics
-
-
 @dataclass
 class TransformerConfig:
     n_layer: int = 6
@@ -224,12 +181,12 @@ class Transformer(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, idx, targets=None):
+    def forward(self, inputs, targets=None):
         """
-        idx: (batch_size, seq_len, d_in)
+        inputs: (batch_size, seq_len, d_in)
         """
-        device = idx.device
-        batch_size, seq_len, d_in = idx.size()
+        device = inputs.device
+        batch_size, seq_len, d_in = inputs.size()
         assert seq_len <= self.config.max_len, f"Cannot forward sequence of length {t}, block size is only {self.config.max_len}"
         pos = torch.arange(0, seq_len, dtype=torch.long, device=device).unsqueeze(0).expand(batch_size, -1) # shape (b, t)
 
@@ -240,9 +197,7 @@ class Transformer(nn.Module):
             x = block(x)
         layer_norm = self.transformer.ln_f(x)
         x = self.transformer.ln_f(x)
-
-        stuff = self.regression_head(x)
-        preds = self.regression_head(x).squeeze(-1)
+        preds = self.regression_head(x).squeeze(-1) # -> (batch_size, seq_len, d_out)
 
         if targets is not None:
             loss = self.loss_fn(preds, targets)
@@ -280,3 +235,86 @@ class Transformer(nn.Module):
         mfu = flops_achieved / flops_promised
         return mfu
 
+
+    def predict(
+        self,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+        init: int = 0,
+        t: int = 1,
+    ) -> tuple[list[float], tuple[torch.Tensor, dict[str, float]]]:
+        """
+        Given tensors of input `trajectories` and target `trajectories`, the initial state index `init`
+        within the trajectories, and the number of time steps `t` to predict,
+        predicts the next states x^_(t+1) using the input states x_(t) from the input trajectories
+        and returns a list of predicted states x^_t along with the loss computed against the target trajectories.
+
+        Note: x^_t is x-hat, the predicted state, at time t.
+
+        Args:
+            inputs (torch.Tensor): A tensor of shape [num_trajectories, seq_len, d_in].
+            targets (torch.Tensor): A tensor of shape [num_trajectories, seq_len, d_out].
+            init (int): The index of the initial state to start at.
+            t (int): The number of time steps to predict.
+
+        Returns:
+
+            predicted_sequence (tuple[list[float], tuple[torch.Tensor, dict[str, float]]]): 
+                A tuple containing the list of predicted states after `t` 
+                time steps.
+
+            loss (tuple[torch.Tensor, dict[str, float]]): 
+                A tuple containing the total loss and a dictionary of metrics.
+
+        Example:
+            # Select a specific slice of input and target trajectories
+            input_trajectories = test_inputs[seq_idx:seq_idx+5]
+            target_trajectories = test_targets[seq_idx:seq_idx+5]
+
+            # Predict the next states using the model
+            init_idx = 0
+            t = 100  # Number of time steps to predict
+            predicted_states, loss = model.predict(input_trajectories, target_trajectories, init=init_idx, t=t)
+        """
+        device = inputs.device
+        num_trajectories, seq_len, d_in = inputs.size()
+
+        # Initialize the predicted sequence and losses
+        predicted_sequence = []
+        total_loss = torch.tensor(0.0, device=device)
+        metrics = {
+            'coordinate_loss': torch.tensor(0.0, device=device),
+            'orientation_loss': torch.tensor(0.0, device=device),
+            'angle_loss': torch.tensor(0.0, device=device),
+            'coordinate_velocity_loss': torch.tensor(0.0, device=device),
+            'angular_velocity_loss': torch.tensor(0.0, device=device)
+        }
+
+        # Iterate over the specified number of time steps
+        for i in range(t):
+            # Get the current input state from the input trajectories tensor
+            current_input_state = inputs[:, init + i, :].unsqueeze(1)
+            # print('inputs', inputs[:, init + i, :].shape)
+            # print('inputs after unsqueeze', inputs[:, init + i, :].unsqueeze(1).shape)
+            # Get the current target state from the target trajectories tensor
+            current_target_state = targets[:, init + i, :].unsqueeze(1)
+            # print('targets',targets[:, init + i, :].shape)
+            # print('targets after unsqueeze', targets[:, init + i, :].unsqueeze(1).shape)
+            # Predict the next state using the model
+            next_state, loss = self.forward(current_input_state, targets=current_target_state)
+            print('next state', next_state.shape)
+            print('next state after squeeze(1)', next_state.squeeze(1).shape)
+            # Append the predicted next state to the sequence
+            predicted_sequence.append(next_state.squeeze(1).tolist())
+
+            # Accumulate the losses
+            total_loss += loss[0]
+            for key in metrics.keys():
+                metrics[key] += loss[1][key]
+
+        # Average the losses over the time steps
+        total_loss /= t
+        for key in metrics.keys():
+            metrics[key] /= t
+        loss = (total_loss, metrics)
+        return predicted_sequence, loss

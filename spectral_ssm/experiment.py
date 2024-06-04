@@ -8,10 +8,11 @@
 
 import torch
 import torch.nn as nn
+
 from typing import Tuple, Dict
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from spectral_ssm import loss_ant, loss_cheetah, loss_walker2d
+
 
 class Experiment:
     """Initializes and maintains the experiment state."""
@@ -19,10 +20,12 @@ class Experiment:
     def __init__(
         self,
         model: nn.Module,
+        loss_fn: nn.Module,
         optimizer: torch.optim.Optimizer,
         device: torch.device = None,
     ) -> None:
-        """Initialize an experiment.
+        """
+        Initialize an experiment.
 
         Args:
             model (nn.Module): A PyTorch model.
@@ -31,12 +34,14 @@ class Experiment:
         """
         self.model = model
         self.optimizer = optimizer
+        self.loss_fn = loss_fn
         self.device = device
         self.model.to(self.device)
 
 
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> Dict[str, float]:
-        """Perform a single training step.
+        """
+        Perform a single training step.
 
         Args:
             inputs (torch.Tensor): A batch of input data.
@@ -50,7 +55,7 @@ class Experiment:
 
         self.optimizer.zero_grad()
         outputs = self.model(inputs)
-        loss, metrics = loss_ant(outputs, targets)
+        loss, metrics = self.loss_fn(outputs, targets)
         loss.backward()
 
         # Compute gradient norm to monitor vanishing/exploding gradients
@@ -87,7 +92,7 @@ class Experiment:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
 
                 outputs = self.model(inputs)
-                loss, _ = loss_ant(outputs, targets)
+                loss, _ = self.loss_fn(outputs, targets)
                 total_loss += loss.item()
                 num_batches += 1
                 progress.update(1)

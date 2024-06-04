@@ -19,6 +19,10 @@ from spectral_ssm import model
 from spectral_ssm import optimizer
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
+from spectral_ssm.loss_ant import AntLoss
+from spectral_ssm.loss_cheetah import HalfCheetahLoss
+from spectral_ssm.loss_walker import Walker2DLoss
+import matplotlib.pyplot as plt
 
 
 def set_seed(seed: int) -> None:
@@ -71,32 +75,53 @@ def setup(rank: int, world_size: int, gpus_per_node: int) -> tuple[torch.device,
 
 
 def plot_metrics(
-    train_losses, train_accuracies, val_losses, val_accuracies, output_dir
+    train_losses, val_losses, 
+    coord_losses, orient_losses, angle_losses, coord_vel_losses, ang_vel_losses, 
+    output_dir
 ):
+    # Convert tensors to numpy arrays if necessary
     train_losses = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in train_losses]
-    train_accuracies = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in train_accuracies]
     val_losses = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in val_losses]
-    val_accuracies = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in val_accuracies]
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    
-    ax1.plot(train_losses, label='Training Loss')
-    ax1.plot(val_losses, label='Validation Loss')
-    ax1.set_xlabel('Step')
-    ax1.set_ylabel('Loss')
-    ax1.set_title('Training and Validation Loss')
-    ax1.legend()
+    # Create a figure with multiple subplots
+    fig, axs = plt.subplots(3, 2, figsize=(15, 15))
 
-    ax2.plot(train_accuracies, label='Training Accuracy')
-    ax2.plot(val_accuracies, label='Validation Accuracy')
-    ax2.set_xlabel('Step')
-    ax2.set_ylabel('Accuracy')
-    ax2.set_title('Training and Validation Accuracy')
-    ax2.legend()
+    # Plot training and validation losses
+    axs[0, 0].plot(train_losses, label='Training Loss')
+    axs[0, 0].plot(val_losses, label='Validation Loss')
+    axs[0, 0].set_xlabel('Step')
+    axs[0, 0].set_ylabel('Loss')
+    axs[0, 0].set_title('Training and Validation Loss')
+    axs[0, 0].legend()
+
+    # Plot other losses
+    axs[1, 0].plot(coord_losses, label='Coordinate Loss')
+    axs[1, 0].plot(orient_losses, label='Orientation Loss')
+    axs[1, 0].set_xlabel('Step')
+    axs[1, 0].set_ylabel('Loss')
+    axs[1, 0].set_title('Coordinate and Orientation Losses')
+    axs[1, 0].legend()
+
+    axs[1, 1].plot(angle_losses, label='Angle Loss')
+    axs[1, 1].plot(coord_vel_losses, label='Coordinate Velocity Loss')
+    axs[1, 1].set_xlabel('Step')
+    axs[1, 1].set_ylabel('Loss')
+    axs[1, 1].set_title('Angle and Coordinate Velocity Losses')
+    axs[1, 1].legend()
+
+    axs[2, 0].plot(ang_vel_losses, label='Angular Velocity Loss')
+    axs[2, 0].set_xlabel('Step')
+    axs[2, 0].set_ylabel('Loss')
+    axs[2, 0].set_title('Angular Velocity Loss')
+    axs[2, 0].legend()
+
+    # Remove unused subplot
+    fig.delaxes(axs[2,1])
 
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, 'metrics.png'))
     plt.close()
+
 
 
 # To run the script: `torchrun --nproc_per_node=1 train.py`
@@ -174,7 +199,7 @@ def main() -> None:
         m_y_learning_rate=m_y_learning_rate,
         m_y_weight_decay=m_y_weight_decay,
     )
-    exp = experiment.Experiment(model=spectral_ssm, optimizer=opt, device=device)
+    exp = experiment.Experiment(model=spectral_ssm, loss_fn=AntLoss(), optimizer=opt, device=device)
     msg = "Lyla: We'll be training with"
 
     if main_process:
@@ -203,10 +228,27 @@ def main() -> None:
 
     torch.autograd.set_detect_anomaly(True)
 
+    # Initialize lists to store losses
+    train_losses = []
+    val_losses = []
+    coord_losses = []
+    orient_losses = []
+    angle_losses = []
+    coord_vel_losses = []
+    ang_vel_losses = []
+
     pbar = tqdm(range(num_steps), desc='Training Progress', unit='step') if main_process else range(num_steps)
     for global_step in pbar:
         inputs, targets = next(iter(train_loader))
         train_metrics = exp.step(inputs, targets)
+
+        # Append the losses
+        train_losses.append(train_metrics["loss"])
+        coord_losses.append(train_metrics["coordinate_loss"])
+        orient_losses.append(train_metrics["orientation_loss"])
+        angle_losses.append(train_metrics["angle_loss"])
+        coord_vel_losses.append(train_metrics["coordinate_velocity_loss"])
+        ang_vel_losses.append(train_metrics["angular_velocity_loss"])
 
         if main_process:
             current_lrs = scheduler.get_last_lr()
@@ -231,6 +273,7 @@ def main() -> None:
                 )
 
             epoch_metrics = exp.evaluate(eval_loader)
+            val_losses.append(epoch_metrics['loss'])
     
             if world_size > 1:
                 # Gather evaluation metrics from all processes
@@ -317,6 +360,10 @@ def main() -> None:
             f' Details are saved in {training_details}.'
             ' It was a pleasure assisting you. Until next time!'
         )
+    
+    # After training, plot the losses
+    plot_metrics(train_losses, val_losses, coord_losses, orient_losses, 
+    angle_losses, coord_vel_losses, ang_vel_losses, 'plots/')
 
 if __name__ == '__main__':
     main()
