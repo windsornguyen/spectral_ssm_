@@ -17,7 +17,7 @@ def main():
     device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
     print('Running on device:', device)
     n_embd = 37
-    d_out = 29
+    d_out = 18
     n_head = 1
     scale = 16 # 4 is default
     n_layer = 6
@@ -29,11 +29,10 @@ def main():
     torch.manual_seed(1337)
 
     # data loading
-    dataset = 'AntBulletEnv-v1'
-    train_inputs = 'data/AntBulletEnv-v1/yagiz_train_inputs.npy'
-    train_targets = 'data/AntBulletEnv-v1/yagiz_train_targets.npy'
-    val_inputs = 'data/AntBulletEnv-v1/yagiz_val_inputs.npy'
-    val_targets = 'data/AntBulletEnv-v1/yagiz_val_targets.npy'
+    train_inputs = 'data/HalfCheetah/train_inputs.npy'
+    train_targets = 'data/HalfCheetah/train_targets.npy'
+    val_inputs = 'data/HalfCheetah/val_inputs.npy'
+    val_targets = 'data/HalfCheetah/val_targets.npy'
 
     # Get dataloaders
     train_loader = get_dataloader(train_inputs, train_targets, 'train', batch_size, device)
