@@ -154,26 +154,41 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: A matrix of shape [seq_len, d_out].
     """
-    # WRONG but faster implementation.
+    # # WRONG but faster implementation.
+    # d_out, k, _ = m_y.shape
+    # batch_size = deltas.size(0)
+
+    # # Initialize carry with zeros for the entire batch
+    # carry = torch.zeros(batch_size, k, d_out, device=deltas.device)
+
+    # # Calculate all tensor dot products at once (requires `m_y` to be compatible)
+    # outputs = torch.einsum('ijk,blk->bi', m_y, carry) + deltas
+
+    # # Define a shift matrix that shifts all outputs down and places the latest output at the top
+    # shift_matrix = torch.eye(k, k, device=deltas.device)
+    # shift_matrix = torch.roll(shift_matrix, 1, dims=0)
+
+    # # Update carry for the next iteration
+    # new_carry = torch.matmul(shift_matrix, carry.reshape(batch_size, k, d_out)).reshape(batch_size, k, d_out)
+    # new_carry[:, 0, :] = outputs
+
+    # # Result collection
+    # ys = outputs
+
     d_out, k, _ = m_y.shape
-    batch_size = deltas.size(0)
+    carry = torch.zeros((k, d_out), device=deltas.device)
+    ys = []
 
-    # Initialize carry with zeros for the entire batch
-    carry = torch.zeros(batch_size, k, d_out, device=deltas.device)
+    for x in deltas:
+        output = torch.tensordot(m_y, carry, dims=2) + x
+        carry = torch.roll(carry, 1, dims=0)
 
-    # Calculate all tensor dot products at once (requires `m_y` to be compatible)
-    outputs = torch.einsum('ijk,blk->bi', m_y, carry) + deltas
+        # Avoid in-place operation by reconstructing the carry tensor
+        carry = torch.cat((output.unsqueeze(0), carry[1:]), dim=0)
 
-    # Define a shift matrix that shifts all outputs down and places the latest output at the top
-    shift_matrix = torch.eye(k, k, device=deltas.device)
-    shift_matrix = torch.roll(shift_matrix, 1, dims=0)
+        ys.append(output.unsqueeze(0))
 
-    # Update carry for the next iteration
-    new_carry = torch.matmul(shift_matrix, carry.reshape(batch_size, k, d_out)).reshape(batch_size, k, d_out)
-    new_carry[:, 0, :] = outputs
-
-    # Result collection
-    ys = outputs
+    ys = torch.cat(ys, dim=0)
 
     return ys
 
