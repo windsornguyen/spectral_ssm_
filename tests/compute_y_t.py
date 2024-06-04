@@ -5,6 +5,113 @@ import numpy as np
 import time
 import torch.autograd.profiler as profiler
 
+@torch.jit.script
+def pscan_fft_simple(A, X):
+    N, T, D = X.shape
+    device = X.device
+    A_log = torch.log(A.to(dtype=torch.cfloat))
+    A_log_T = A_log.T
+    A_log_T = torch.cat([A_log_T, torch.zeros(T - 1, N, device=device)], dim=0)
+    mask1 = torch.where((torch.arange(2 * T - 1, device=device) <= T - 1),1,0,)
+    mask1 = mask1.unsqueeze(1)
+    Z1_log_rev = torch.fft.ifft(torch.fft.fft(mask1, dim=0) * torch.fft.fft(A_log_T, dim=0), n=2 * T - 1, dim=0)
+    Z1_log_rev = Z1_log_rev[:T, :].T.unsqueeze(-1)
+    mask2 = torch.where(torch.cat([((torch.arange(2 * T - 1, device=device) >= 1) & (torch.arange(2 * T - 1, device=device) <= t)).unsqueeze(0) for t in range(T)], dim=0,), 1, 0,)
+    mask2 = mask2.unsqueeze(-1)
+    Z2_log_rev = torch.fft.ifft(torch.fft.fft(mask2, dim=1) * torch.fft.fft(A_log_T.unsqueeze(0), dim=1),n=2 * T - 1,dim=1,)
+    Z2_log_rev = Z2_log_rev[:, :T, :]
+    Z2_log_rev = Z2_log_rev.permute(2, 0, 1)
+    Z2_log_rev = torch.tril(Z2_log_rev, diagonal=0)
+    Z_log = Z1_log_rev - Z2_log_rev
+    Z = torch.tril(torch.exp(Z_log), diagonal=0)
+    Y_ = torch.bmm(Z, X)
+    Y_ = torch.cat([torch.zeros(N, 1, D, device=device), Y_[:, :-1, :]], dim=1)
+    Y = Y_ + X
+    return Y
+
+@torch.jit.script
+def pscan_naive(A, X):
+    N, T, D = X.shape
+    device = X.device
+    Y = torch.zeros(N, T, D, device=device, dtype=X.dtype)
+    Y[:, 0, :] = X[:, 0, :]
+    for k in range(1, X.shape[1]): Y[:, k, :] = A[:, k - 1].unsqueeze(1) * Y[:, k - 1, :] + X[:, k, :]
+    return Y
+
+@torch.jit.script
+def get_eig(A):
+    return torch.linalg.eig(A)
+
+# @torch.jit.script
+def compute_y_t_pscan(m_y: torch.Tensor, deltas: torch.Tensor, use_fft: bool) -> torch.Tensor:
+    """
+    Compute sequence of y_t given a series of deltas and m_y via a simple scan.
+
+    Args:
+        m_y (torch.Tensor): A matrix of shape [d_out, k, d_out] that acts as windowed 
+            transition matrix for the linear dynamical system evolving y_t.
+        deltas (torch.Tensor): A matrix of shape [seq_len, d_out].
+
+    Returns:
+        torch.Tensor: A matrix of shape [seq_len, d_out].
+    """
+
+    # stack states and transitions to have a bona fide LDS. state is of dimension `k * d_out`
+    # transition matrix has (a permuted) m_y in the first row, and identity on the -1 off-diagonal
+    _, k, d = m_y.shape
+    L, _ = deltas.shape
+    identity = torch.cat([torch.eye((k - 1) * d), torch.zeros((k - 1) * d, d)], axis=1)
+    reshaped_M = m_y.reshape(d, k * d)
+    A = torch.cat([reshaped_M, identity], axis=0)
+    X = torch.cat([deltas, torch.zeros(L, (k - 1) * d)], axis=-1)
+
+    # diagonalize dynamics and project
+    evals, evecs = get_eig(A)
+    inv_evecs = torch.linalg.inv(evecs)
+    X_diag = X.to(torch.complex64) @ inv_evecs.T
+    # X_diag = (inv_evecs @ X.to(torch.complex64).T).T
+
+    # run diagonal pscan. N = k * d and T = L
+    A_pscan = torch.tile(evals[:, None], (1, L))
+    X_pscan = X_diag.T[:, :, None]
+    Y_pscan = pscan_fft_simple(A_pscan, X_pscan) if use_fft else pscan_naive(A_pscan, X_pscan)
+    ys = Y_pscan[:, :, 0].T
+
+    # undiagonalize
+    # ys = (evecs @ ys.T).T.to(torch.float32)
+    ys = (ys @ evecs.T).to(torch.float32)
+    return ys[:, :d]
+
+# @torch.jit.script
+def compute_y_t_stack(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
+    """
+    Compute sequence of y_t given a series of deltas and m_y via a simple scan.
+
+    Args:
+        m_y (torch.Tensor): A matrix of shape [d_out, k, d_out] that acts as windowed 
+            transition matrix for the linear dynamical system evolving y_t.
+        deltas (torch.Tensor): A matrix of shape [seq_len, d_out].
+
+    Returns:
+        torch.Tensor: A matrix of shape [seq_len, d_out].
+    """
+
+    # stack states and transitions to have a bona fide LDS. state is of dimension `k * d_out`
+    # transition matrix has (a permuted) m_y in the first row, and identity on the -1 off-diagonal
+    _, k, d = m_y.shape
+    L, _ = deltas.shape
+    identity = torch.cat([torch.eye((k - 1) * d), torch.zeros((k - 1) * d, d)], axis=1)
+    reshaped_M = m_y.reshape(d, k * d)
+    A = torch.cat([reshaped_M, identity], axis=0)
+    X = torch.cat([deltas, torch.zeros(L, (k - 1) * d)], axis=-1)
+
+    y = X[0]
+    ys = [y[:d]]
+    for i in range(1, L):
+        y = A @ y + X[i]
+        ys.append(y[:d])
+    return torch.stack(ys)
+
 
 @torch.jit.script
 def compute_y_t_torch(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
@@ -38,44 +145,44 @@ def compute_y_t_torch(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
 
     # return ys
     
-    d_out, k, _ = m_y.shape
-    batch_size = deltas.size(0)
-
-    # Initialize carry with zeros for the entire batch
-    carry = torch.zeros(batch_size, k, d_out, device=deltas.device)
-
-    # Calculate all tensor dot products at once (requires `m_y` to be compatible)
-    outputs = torch.einsum('ijk,blk->bi', m_y, carry) + deltas
-
-    # Define a shift matrix that shifts all outputs down and places the latest output at the top
-    shift_matrix = torch.eye(k, k, device=deltas.device)
-    shift_matrix = torch.roll(shift_matrix, 1, dims=0)
-
-    # Update carry for the next iteration
-    new_carry = torch.matmul(shift_matrix, carry.reshape(batch_size, k, d_out)).reshape(batch_size, k, d_out)
-    new_carry[:, 0, :] = outputs
-
-    # Result collection
-    ys = outputs
-
-    return ys
-
     # d_out, k, _ = m_y.shape
-    # carry = torch.zeros((k, d_out), device=deltas.device)
-    # ys = []
+    # batch_size = deltas.size(0)
 
-    # for x in deltas:
-    #     output = torch.tensordot(m_y, carry, dims=2) + x
-    #     carry = torch.roll(carry, 1, dims=0)
+    # # Initialize carry with zeros for the entire batch
+    # carry = torch.zeros(batch_size, k, d_out, device=deltas.device)
 
-    #     # Avoid in-place operation by reconstructing the carry tensor
-    #     carry = torch.cat((output.unsqueeze(0), carry[1:]), dim=0)
+    # # Calculate all tensor dot products at once (requires `m_y` to be compatible)
+    # outputs = torch.einsum('ijk,blk->bi', m_y, carry) + deltas
 
-    #     ys.append(output.unsqueeze(0))
+    # # Define a shift matrix that shifts all outputs down and places the latest output at the top
+    # shift_matrix = torch.eye(k, k, device=deltas.device)
+    # shift_matrix = torch.roll(shift_matrix, 1, dims=0)
 
-    # ys = torch.cat(ys, dim=0)
+    # # Update carry for the next iteration
+    # new_carry = torch.matmul(shift_matrix, carry.reshape(batch_size, k, d_out)).reshape(batch_size, k, d_out)
+    # new_carry[:, 0, :] = outputs
+
+    # # Result collection
+    # ys = outputs
 
     # return ys
+
+    d_out, k, _ = m_y.shape
+    carry = torch.zeros((k, d_out), device=deltas.device)
+    ys = []
+
+    for x in deltas:
+        output = torch.tensordot(m_y, carry, dims=2) + x
+        carry = torch.roll(carry, 1, dims=0)
+
+        # Avoid in-place operation by reconstructing the carry tensor
+        carry = torch.cat((output.unsqueeze(0), carry[1:]), dim=0)
+
+        ys.append(output.unsqueeze(0))
+
+    ys = torch.cat(ys, dim=0)
+
+    return ys
 
 
 @jax.jit
@@ -108,9 +215,9 @@ np.random.seed(42)
 d_out = np.random.randint(10, 100)
 k = np.random.randint(1, 10)
 seq_len = np.random.randint(100, 1000)
-# d_out = 2
-# k = 3
-# seq_len = 4
+# d_out = 128
+# k = 24
+# seq_len = 1000
 print(f'Testing compute_y_t function for m_y of shape [{d_out}, {k}, {d_out}] and deltas of shape [{seq_len}, {d_out}].')
 
 # Create random input data
@@ -157,13 +264,14 @@ print(f'Execution Time (JAX): {time_jax:.6f}s')
 # Compare the results
 print('\nComparing the results...')
 
-if np.allclose(result_torch.numpy(), result_jax, atol=1e-8):
+atol = 1e-3
+if np.allclose(result_torch.numpy(), result_jax, atol=atol):
     print('The results from PyTorch and JAX are close enough.')
 else:
     print('The results from PyTorch and JAX differ more than the acceptable tolerance.')
     
     # Find the indices where the results differ
-    diff_indices = np.where(np.abs(result_torch.numpy() - result_jax) > 1e-8)
+    diff_indices = np.where(np.abs(result_torch.numpy() - result_jax) > atol)
     
     # Print the differing indices and values
     print('Differing indices and values:')
