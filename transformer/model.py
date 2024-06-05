@@ -283,11 +283,11 @@ class Transformer(nn.Module):
         predicted_sequence = []
         total_loss = torch.tensor(0.0, device=device)
         metrics = {
-            'coordinate_loss': torch.tensor(0.0, device=device),
-            'orientation_loss': torch.tensor(0.0, device=device),
-            'angle_loss': torch.tensor(0.0, device=device),
-            'coordinate_velocity_loss': torch.tensor(0.0, device=device),
-            'angular_velocity_loss': torch.tensor(0.0, device=device)
+            'coordinate_loss': [],
+            'orientation_loss': [],
+            'angle_loss': [],
+            'coordinate_velocity_loss': [],
+            'angular_velocity_loss': []
         }
 
         # Iterate over the specified number of time steps
@@ -310,11 +310,9 @@ class Transformer(nn.Module):
             # Accumulate the losses
             total_loss += loss[0]
             for key in metrics.keys():
-                metrics[key] += loss[1][key]
+                metrics[key].append(loss[1][key].item()) # Append the loss at each time step
 
         # Average the losses over the time steps
         total_loss /= t
-        for key in metrics.keys():
-            metrics[key] /= t
         loss = (total_loss, metrics)
         return predicted_sequence, loss

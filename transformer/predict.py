@@ -59,15 +59,15 @@ def main():
 
     # Plot the individual losses
     fig2, axs = plt.subplots(2, 3, figsize=(15, 8))
-    axs[0, 0].plot(range(init_idx, init_idx + t), np.full(t, coordinate_loss.item()))
+    axs[0, 0].plot(range(init_idx, init_idx + t), coordinate_loss)
     axs[0, 0].set_title('Coordinate Loss')
-    axs[0, 1].plot(range(init_idx, init_idx + t), np.full(t, orientation_loss.item()))
+    axs[0, 1].plot(range(init_idx, init_idx + t), orientation_loss)
     axs[0, 1].set_title('Orientation Loss')
-    axs[0, 2].plot(range(init_idx, init_idx + t), np.full(t, angle_loss.item()))
+    axs[0, 2].plot(range(init_idx, init_idx + t), angle_loss)
     axs[0, 2].set_title('Angle Loss')
-    axs[1, 0].plot(range(init_idx, init_idx + t), np.full(t, coordinate_velocity_loss.item()))
+    axs[1, 0].plot(range(init_idx, init_idx + t), coordinate_velocity_loss)
     axs[1, 0].set_title('Coordinate Velocity Loss')
-    axs[1, 1].plot(range(init_idx, init_idx + t), np.full(t, angular_velocity_loss.item()))
+    axs[1, 1].plot(range(init_idx, init_idx + t), angular_velocity_loss)
     axs[1, 1].set_title('Angular Velocity Loss')
     axs[1, 2].axis('off')  # Leave the last subplot empty
 
