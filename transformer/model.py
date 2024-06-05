@@ -294,12 +294,8 @@ class Transformer(nn.Module):
         for i in range(t):
             # Get the current input state from the input trajectories tensor
             current_input_state = inputs[:, init + i, :].unsqueeze(1)
-            # print('inputs', inputs[:, init + i, :].shape)
-            # print('inputs after unsqueeze', inputs[:, init + i, :].unsqueeze(1).shape)
             # Get the current target state from the target trajectories tensor
             current_target_state = targets[:, init + i, :].unsqueeze(1)
-            # print('targets',targets[:, init + i, :].shape)
-            # print('targets after unsqueeze', targets[:, init + i, :].unsqueeze(1).shape)
             # Predict the next state using the model
             next_state, loss = self.forward(current_input_state, targets=current_target_state)
             print('next state', next_state.shape)

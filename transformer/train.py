@@ -31,10 +31,10 @@ def main():
     torch.manual_seed(1337)
 
     # data loading
-    train_inputs = '../data/Ant-v1/yagiz_train_inputs.npy'
-    train_targets = '../data/Ant-v1/yagiz_train_targets.npy'
-    val_inputs = '../data/Ant-v1/yagiz_val_inputs.npy'
-    val_targets = '../data/Ant-v1/yagiz_val_targets.npy'
+    train_inputs = 'data/Ant-v1/yagiz_train_inputs.npy'
+    train_targets = 'data/Ant-v1/yagiz_train_targets.npy'
+    val_inputs = 'data/Ant-v1/yagiz_val_inputs.npy'
+    val_targets = 'data/Ant-v1/yagiz_val_targets.npy'
 
     # Get dataloaders
     train_loader = get_dataloader(train_inputs, train_targets, 'train', batch_size, device)
