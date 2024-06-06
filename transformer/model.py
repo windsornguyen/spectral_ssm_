@@ -7,9 +7,6 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
 
-import sys
-sys.path.append('..')
-
 import math
 from dataclasses import dataclass
 from typing import Tuple, Dict
@@ -18,72 +15,82 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-from spectral_ssm.loss_ant import AntLoss
-from spectral_ssm.loss_cheetah import HalfCheetahLoss
-from spectral_ssm.loss_walker import Walker2DLoss
-
 
 class CausalSelfAttention(nn.Module):
-
+    """Self-attention layer for the Transformer."""
     def __init__(self, config):
         super(CausalSelfAttention, self).__init__()
         assert config.n_embd % config.n_head == 0
-        # key, query, value projections for all heads, but in a batch
+
+        # Key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
-        # output projection
+
+        # Output projection
         self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
-        # regularization
-        self.attn_dropout = nn.Dropout(config.dropout)
+
+        # Regularization
+        self.attn_dropout  = nn.Dropout(config.dropout)
         self.resid_dropout = nn.Dropout(config.dropout)
-        self.n_head = config.n_head
-        self.n_embd = config.n_embd
-        self.dropout = config.dropout
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
+        self.n_head        = config.n_head
+        self.n_embd        = config.n_embd
+        self.dropout       = config.dropout
+
+        # Flash attention makes GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
             print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
-            # causal mask to ensure that attention is only applied to the left in the input sequence
-            self.register_buffer("bias", torch.tril(torch.ones(config.max_len, config.max_len))
+            # Causal mask to ensure attention is only applied to the left in input sequence
+            self.register_buffer("mask", torch.tril(torch.ones(config.max_len, config.max_len))
                                         .view(1, 1, config.max_len, config.max_len))
+
 
     def forward(self, x):
         """
-        x: input tensor of shape (seq_len, n_embd)
-        """
-        B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
-        # T, C = x.size()
+        Performs the forward pass of the CausalSelfAttention layer.
 
-        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        Args:
+            x (torch.Tensor): Input tensor of shape (B, T, C), where B is the batch size,
+                T is the sequence length, and C is the embedding dimensionality (n_embd).
+
+        Returns:
+            torch.Tensor: Output tensor of shape (B, T, C) after applying self-attention.
+        """
+        # Batch size, sequence length, embedding dimensionality (n_embd)
+        B, T, C = x.size()
+
+        # Compute query, key, values for all heads in batch, and move head forward to be the batch dim
         q, k, v  = self.c_attn(x).split(self.n_embd, dim=2)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
 
-        # k = k.view(T, self.n_head, C // self.n_head).transpose(0, 1) # (B, nh, T, hs)
-        # q = q.view(T, self.n_head, C // self.n_head).transpose(0, 1) # (B, nh, T, hs)
-        # v = v.view(T, self.n_head, C // self.n_head).transpose(0, 1) # (B, nh, T, hs)
-
-        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        # Causal self-attention; self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
-            # efficient attention using Flash Attention CUDA kernels
-            y = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=None, dropout_p=self.dropout if self.training else 0, is_causal=True)
+            # Efficient attention using Flash Attention CUDA kernels
+            y = torch.nn.functional.scaled_dot_product_attention(
+                q, k, v, 
+                attn_mask=None, 
+                dropout_p=self.dropout if self.training else 0, 
+                is_causal=True
+            )
         else:
-            # manual implementation of attention
+            # Manual implementation of self-attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
             att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-            
-        # re-assemble all head outputs side by side
+            y   = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+
+        # Re-assemble all head outputs side by side
         y = y.transpose(1, 2).contiguous().view(B, T, C) # -> (B, 1, T, C)
 
-        # output projection
+        # Output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-class MLP(nn.Module):
 
+class MLP(nn.Module):
+    """Simple multi-layer perceptron."""
     def __init__(self, config):
         super().__init__()
         self.c_fc    = nn.Linear(config.n_embd, config.scale * config.n_embd, bias=config.bias)
@@ -99,13 +106,13 @@ class MLP(nn.Module):
         return x
 
 class Block(nn.Module):
-
+    """Single block of the Transformer."""
     def __init__(self, config):
         super().__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
+        self.mlp  = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -123,6 +130,7 @@ class TransformerConfig:
     max_len: int = 1_000
     bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     dropout: float = 0.25
+    loss_fn: nn.Module = None
 
 
 class Transformer(nn.Module):
@@ -139,17 +147,18 @@ class Transformer(nn.Module):
             ln_f = nn.LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.regression_head = nn.Linear(config.n_embd, config.d_out, bias=False)
-        self.loss_fn = AntLoss()
+        self.loss_fn = config.loss_fn
 
-        # init all weights
+        # Initialize all weights
         self.apply(self._init_weights)
-        # apply special scaled init to the residual projections, per GPT-2 paper
+
+        # Apply special scaled init to the residual projections, per GPT-2 paper
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
-        # report number of parameters
-        print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+        # Report the number of parameters
+        print("Model parameter count (excluding positional embeddings): %.2fM" % (self.get_num_params() / 1e6,))
 
     def get_num_params(self, non_embedding=True):
         """
@@ -180,12 +189,11 @@ class Transformer(nn.Module):
         assert seq_len <= self.config.max_len, f"Cannot forward sequence of length {t}, block size is only {self.config.max_len}"
         pos = torch.arange(0, seq_len, dtype=torch.long, device=device).unsqueeze(0).expand(batch_size, -1) # shape (b, t)
 
-        # forward the GPT model itself
+        # Forward the Transformer model itself
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.dropout(pos_emb)
         for block in self.transformer.h:
             x = block(x)
-        layer_norm = self.transformer.ln_f(x)
         x = self.transformer.ln_f(x)
         # preds = self.regression_head(x).squeeze(-1)# -> (batch_size, seq_len, d_out)
         preds = self.regression_head(x) # -> (batch_size, seq_len, d_out)
@@ -197,18 +205,21 @@ class Transformer(nn.Module):
 
         return preds, loss
 
+
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
-        # first estimate the number of flops we do per iteration.
-        # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
+        """ Estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS. """
+        # First, estimate the number of flops we do per iteration.
+        # See the PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
         cfg = self.config
+
         L, H, Q, T = cfg.n_layer, cfg.n_head, cfg.n_embd // cfg.n_head, cfg.max_len
-        flops_per_token = 6*N + 12*L*H*Q*T
+        flops_per_token = 6 * N + 12 * L * H * Q * T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
-        # express our flops throughput as ratio of A100 bfloat16 peak flops
-        flops_achieved = flops_per_iter * (1.0/dt) # per second
+
+        # Express our flops throughput as ratio of A100 bfloat16 peak flops
+        flops_achieved = flops_per_iter * (1.0 / dt) # per second
         flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
         mfu = flops_achieved / flops_promised
         return mfu

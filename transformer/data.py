@@ -35,7 +35,7 @@ class PhysicsDataset(Dataset):
         return x_t, x_t_plus_1
 
 # TODO: num_workers > 0 breaks it
-def get_dataloader(train_path, val_path, split, batch_size, device, shuffle=False, num_workers=0):
+def get_dataloader(train_path, val_path, batch_size, device, shuffle=False, num_workers=0):
     """Create a DataLoader for the given dataset."""
     dataset = PhysicsDataset(train_path, val_path, device)
     return DataLoader(

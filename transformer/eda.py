@@ -4,9 +4,12 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
 # Load the input and target data
-controller = 'HalfCheetah-v1'
+controller = 'Walker2D-v1'
 input_file = f'data/{controller}/3000/input.npy'
 target_file = f'data/{controller}/3000/output.npy'
+# Ant (in, out) dims: (37, 29)
+# Walker2D (in, out)  dims: (24, 18)
+# HalfCheetah (in, out)  dims: (24, 18)
 
 input_data = np.load(input_file)
 target_data = np.load(target_file)

@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from typing import Tuple, Dict
 
+
 class AntLoss(nn.Module):
     def __init__(self):
         super(AntLoss, self).__init__()
@@ -30,7 +31,6 @@ class AntLoss(nn.Module):
             A Tuple of the loss and a dictionary of metrics.
         """
         total_loss = torch.tensor(0.0, device=outputs.device)
-
         coordinate_loss = torch.tensor(0.0, device=outputs.device)
         orientation_loss = torch.tensor(0.0, device=outputs.device)
         angle_loss = torch.tensor(0.0, device=outputs.device)
@@ -42,19 +42,19 @@ class AntLoss(nn.Module):
 
             # scaling by constant just for now
             if i in (0, 1, 2):  # coordinates of the torso (center)
-                loss = loss / 5
+                loss /= 5
                 coordinate_loss += loss.mean()
             elif i in (3, 4, 5, 6):  # orientations of the torso (center)
-                loss = loss / 0.2
+                loss /= 0.2
                 orientation_loss += loss.mean()
             elif i in (7, 8, 9, 10, 11, 12, 13, 14):  # angles between the torso and the links
-                loss = loss / 0.5
+                loss /= 0.5
                 angle_loss += loss.mean()
             elif i in (15, 16, 17, 18, 19, 20):  # coordinate and coordinate angular velocities of the torso (center)
-                loss = loss / 2
+                loss /= 2
                 coordinate_velocity_loss += loss.mean()
             elif i in (21, 22, 23, 24, 25, 26, 27, 28):  # angular velocities of the angles between the torso and the links
-                loss = loss / 5
+                loss /= 5
                 angular_velocity_loss += loss.mean()
 
             total_loss += loss.mean()
@@ -66,6 +66,13 @@ class AntLoss(nn.Module):
         coordinate_velocity_loss /= 6
         angular_velocity_loss /= 8
 
-        metrics = {'loss': total_loss.item(), 'coordinate_loss': coordinate_loss.item(), 'orientation_loss': orientation_loss.item(), 'angle_loss': angle_loss.item(), 'coordinate_velocity_loss': coordinate_velocity_loss.item(), 'angular_velocity_loss': angular_velocity_loss.item()}
+        metrics = {
+            'loss': total_loss.item(), 
+            'coordinate_loss': coordinate_loss.item(), 
+            'orientation_loss': orientation_loss.item(), 
+            'angle_loss': angle_loss.item(), 
+            'coordinate_velocity_loss': coordinate_velocity_loss.item(), 
+            'angular_velocity_loss': angular_velocity_loss.item()
+        }
 
         return total_loss, metrics

@@ -1,19 +1,21 @@
 # ==============================================================================#
 # Authors: Isabel Liu
-# File: loss_walker.py
+# File: loss_cheetah.py
 # ==============================================================================#
 
-"""Customized Loss for Walker2D-v1 Task."""
+"""Customized Loss for HalfCheetah-v1 Task."""
 
 import torch
 import torch.nn as nn
 from typing import Tuple, Dict
 
-class Walker2DLoss(nn.Module):
+
+class HalfCheetahLoss(nn.Module):
     def __init__(self):
-        super(Walker2DLoss, self).__init__()
+        super(HalfCheetahLoss, self).__init__()
 
     def forward(
+        self,
         outputs: torch.Tensor, 
         targets: torch.Tensor
     ) -> Tuple[torch.Tensor, Dict[str, float]]:
@@ -28,12 +30,14 @@ class Walker2DLoss(nn.Module):
                 Tuple[torch.Tensor, Dict[str, float]]: 
                 A Tuple of the loss and a Dictionary of metrics.
             """
-            print('here')
             total_loss = torch.tensor(0.0, device=outputs.device)
+            coordinate_loss = torch.tensor(0.0, device=outputs.device)
+            angle_loss = torch.tensor(0.0, device=outputs.device)
+            coordinate_velocity_loss = torch.tensor(0.0, device=outputs.device)
+            angular_velocity_loss = torch.tensor(0.0, device=outputs.device)
+
             for i in range(outputs.shape[1]):
-                print('here2')
                 loss = (outputs[:, i] - targets[:, i]) ** 2
-                print('here3')
 
                 # scaling by constant just for now
                 if i in (0, 1):  # coordinates of the front tip
@@ -57,6 +61,12 @@ class Walker2DLoss(nn.Module):
             coordinate_velocity_loss /= 2
             angular_velocity_loss /= 7
 
-            metrics = {'loss': total_loss.item(), 'coordinate_loss': coordinate_loss.item(), 'angle_loss': angle_loss.item(), 'coordinate_velocity_loss': coordinate_velocity_loss.item(), 'angular_velocity_loss': angular_velocity_loss.item()}
+            metrics = {
+                # 'loss': total_loss.item(), not returned as total_loss is returned below
+                'coordinate_loss': coordinate_loss.item(), 
+                'angle_loss': angle_loss.item(), 
+                'coordinate_velocity_loss': coordinate_velocity_loss.item(), 
+                'angular_velocity_loss': angular_velocity_loss.item()
+            }
 
             return total_loss, metrics

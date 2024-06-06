@@ -23,6 +23,7 @@ from spectral_ssm.loss_ant import AntLoss
 from spectral_ssm.loss_cheetah import HalfCheetahLoss
 from spectral_ssm.loss_walker import Walker2DLoss
 import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter1d
 
 
 def set_seed(seed: int) -> None:
@@ -32,7 +33,6 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-# TODO: Add snapshot checkpointing logic somewhere for fault tolerance
 def setup(rank: int, world_size: int, gpus_per_node: int) -> tuple[torch.device, int, int]:
     """
     Adapts to distributed or non-distributed training environments.
@@ -74,54 +74,43 @@ def setup(rank: int, world_size: int, gpus_per_node: int) -> tuple[torch.device,
     return device, local_rank, world_size
 
 
-def plot_metrics(
-    train_losses, val_losses, 
-    coord_losses, orient_losses, angle_losses, coord_vel_losses, ang_vel_losses, 
-    output_dir
-):
-    # Convert tensors to numpy arrays if necessary
-    train_losses = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in train_losses]
-    val_losses = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in val_losses]
+def smooth_curve(points, sigma=2):
+    return gaussian_filter1d(points, sigma=sigma)
 
-    # Create a figure with multiple subplots
-    fig, axs = plt.subplots(3, 2, figsize=(15, 15))
 
-    # Plot training and validation losses
-    axs[0, 0].plot(train_losses, label='Training Loss')
-    axs[0, 0].plot(val_losses, label='Validation Loss')
-    axs[0, 0].set_xlabel('Step')
-    axs[0, 0].set_ylabel('Loss')
-    axs[0, 0].set_title('Training and Validation Loss')
-    axs[0, 0].legend()
+def plot_losses(losses, title, eval_interval=None, ylabel='Loss'):
+    if eval_interval:
+        x_values = [i * eval_interval for i in range(len(losses))]
+    else:
+        x_values = list(range(len(losses)))
+    plt.plot(x_values, smooth_curve(losses), label=title)
+    plt.xlabel('Steps')
+    plt.ylabel(ylabel)
+    plt.legend()
 
-    # Plot other losses
-    axs[1, 0].plot(coord_losses, label='Coordinate Loss')
-    axs[1, 0].plot(orient_losses, label='Orientation Loss')
-    axs[1, 0].set_xlabel('Step')
-    axs[1, 0].set_ylabel('Loss')
-    axs[1, 0].set_title('Coordinate and Orientation Losses')
-    axs[1, 0].legend()
 
-    axs[1, 1].plot(angle_losses, label='Angle Loss')
-    axs[1, 1].plot(coord_vel_losses, label='Coordinate Velocity Loss')
-    axs[1, 1].set_xlabel('Step')
-    axs[1, 1].set_ylabel('Loss')
-    axs[1, 1].set_title('Angle and Coordinate Velocity Losses')
-    axs[1, 1].legend()
+def plot_metrics(train_losses, val_losses, metric_losses, output_dir):
+    plt.style.use('seaborn-v0_8-whitegrid')
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
-    axs[2, 0].plot(ang_vel_losses, label='Angular Velocity Loss')
-    axs[2, 0].set_xlabel('Step')
-    axs[2, 0].set_ylabel('Loss')
-    axs[2, 0].set_title('Angular Velocity Loss')
-    axs[2, 0].legend()
-
-    # Remove unused subplot
-    fig.delaxes(axs[2,1])
-
+    # Plot training and validation losses (main losses - losses.png)
+    plt.figure(figsize=(10, 5))
+    plot_losses(train_losses, 'Training Loss')
+    plot_losses(val_losses, 'Validation Loss', eval_interval)
+    plt.title(f'Training and Validation Losses on {controller} Task')
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'metrics.png'))
+    plt.savefig(os.path.join(output_dir, f'{controller}_losses.png'), dpi=300)
     plt.close()
 
+    # Plot other losses (other losses - details.png)
+    plt.figure(figsize=(10, 5))
+    for metric, losses in metric_losses.items():
+        plot_losses(losses, metric)
+    plt.title('Other Losses over Time')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f'{controller}_details.png'), dpi=300)
+    plt.close()
 
 
 # To run the script: `torchrun --nproc_per_node=1 train.py`
@@ -178,16 +167,10 @@ def main() -> None:
     # Wrap the model with DistributedDataParallel for distributed training
     # TODO: Distributed code is not ready yet
     if world_size > 1:
-        # Needed only if using BatchNorm during distributed training
-        # spectral_ssm = torch.nn.SyncBatchNorm.convert_sync_batchnorm(spectral_ssm)
         spectral_ssm = DDP(
             spectral_ssm,
             device_ids=[local_rank],
             output_device=local_rank,
-            # TODO: There is a dead neuron for some reason...
-            # module.layers.0.0.m_u
-            # TODO: Removing this parameter results in error in distributed training
-            # find_unused_parameters=False,
         )
 
     spectral_ssm = spectral_ssm.module if world_size > 1 else spectral_ssm
@@ -200,7 +183,10 @@ def main() -> None:
         m_y_learning_rate=m_y_learning_rate,
         m_y_weight_decay=m_y_weight_decay,
     )
-    exp = experiment.Experiment(model=spectral_ssm, loss_fn=AntLoss(), optimizer=opt, device=device)
+
+    controller = 'Walker2D-v1'
+    loss_fn = HalfCheetahLoss() if controller == 'HalfCheetah-v1' else Walker2DLoss() if controller == 'Walker2D-v1' else AntLoss()
+    exp = experiment.Experiment(model=spectral_ssm, loss_fn=loss_fn, optimizer=opt, device=device)
     msg = "Lyla: We'll be training with"
 
     if main_process:
@@ -212,7 +198,6 @@ def main() -> None:
         else:
             print(f'{msg} {device} today.')
 
-    controller = 'Walker2D-v1'
     train_inputs = f'transformer/data/{controller}/3000/train_inputs.npy'
     train_targets = f'transformer/data/{controller}/3000/train_targets.npy'
     val_inputs = f'transformer/data/{controller}/3000/val_inputs.npy'
@@ -239,11 +224,13 @@ def main() -> None:
     # Initialize lists to store losses
     train_losses = []
     val_losses = []
-    coord_losses = []
-    orient_losses = []
-    angle_losses = []
-    coord_vel_losses = []
-    ang_vel_losses = []
+    metric_losses = {
+        'coordinate_loss': [],
+        'orientation_loss': [],
+        'angle_loss': [],
+        'coordinate_velocity_loss': [],
+        'angular_velocity_loss': []
+    }
 
     pbar = tqdm(range(num_steps), desc='Training Progress', unit='step') if main_process else range(num_steps)
     for global_step in pbar:
@@ -252,24 +239,23 @@ def main() -> None:
 
         # Append the losses
         train_losses.append(train_metrics["loss"])
-        coord_losses.append(train_metrics["coordinate_loss"])
-        orient_losses.append(train_metrics["orientation_loss"])
-        angle_losses.append(train_metrics["angle_loss"])
-        coord_vel_losses.append(train_metrics["coordinate_velocity_loss"])
-        ang_vel_losses.append(train_metrics["angular_velocity_loss"])
+        for metric in metric_losses:
+            if metric in train_metrics:
+                metric_losses[metric].append(train_metrics[metric])
 
         if main_process:
             current_lrs = scheduler.get_last_lr()
             default_lr = current_lrs[0]
             m_y_lr = current_lrs[1]
             lrs = f"{default_lr:.2e}, m_y_lr={m_y_lr:.2e}"
-            pbar.set_postfix(
-                {
-                    # 'train_acc': f'{train_metrics["accuracy"]:.4f}%',
-                    'train_loss': f'{train_metrics["loss"]:.4f}',
-                    'lr': lrs
-                }
-            )
+            postfix_dict = {
+                'tr_loss': train_metrics["loss"].item(),
+                'lr': lrs
+            }
+            for metric in train_metrics:
+                if metric in metric_losses:
+                    postfix_dict[metric] = train_metrics[metric].item()
+            pbar.set_postfix(postfix_dict)
 
         scheduler.step()
 
@@ -280,38 +266,35 @@ def main() -> None:
                     "Lyla: It's time for an evaluation update! Let's see how our model is doing..."
                 )
 
-            epoch_metrics = exp.evaluate(eval_loader)
-            val_losses.append(epoch_metrics['loss'])
+            val_metrics = exp.evaluate(val_loader)
+            val_losses.append(val_metrics['loss'])
     
             if world_size > 1:
                 # Gather evaluation metrics from all processes
                 gathered_metrics = [None] * world_size
-                torch.distributed.all_gather_object(gathered_metrics, epoch_metrics)
+                torch.distributed.all_gather_object(gathered_metrics, val_metrics)
                 
                 if main_process:
                     # Aggregate metrics across all processes
                     total_loss = sum(metric['loss'] for metric in gathered_metrics) / world_size
-                    # total_accuracy = sum(metric['accuracy'] for metric in gathered_metrics) / world_size
                     print(
                         f'\nLyla: Evaluating the model on step {global_step}'
-                        # f' -- Average Accuracy: {total_accuracy:.4f}%,'
                         f' Average Loss: {total_loss:.4f}.'
                     )
-                    epoch_metrics = {'loss': total_loss}
+                    val_metrics = {'loss': total_loss}
             else:
                 if main_process:
                     print(
                     f'\nLyla: Evaluating the model on step {global_step}'
-                    # f' -- Accuracy: {epoch_metrics["accuracy"]:.2f}%,'
-                    f' Loss: {epoch_metrics["loss"]:.2f}.'
+                    f' Loss: {val_metrics["loss"]:.2f}.'
                 )
 
             if main_process:
-                val_loss = epoch_metrics['loss']
+                val_loss = val_metrics['loss']
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
                     best_model_step = global_step
-                    best_model_metrics = epoch_metrics
+                    best_model_metrics = val_metrics
                     eval_periods_without_improvement = 0
                     timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
                     checkpoint_filename = f'checkpoint-step{global_step}-{timestamp}.pt'
@@ -345,11 +328,9 @@ def main() -> None:
 
     # Print detailed information about the best model
     if main_process:
-        # Print detailed information about the best model
         print("\nLyla: Training completed! Nice work. Here's the best model information:")
         print(f'    Best model at step {best_model_step}')
         print(f'    Best model validation loss: {best_val_loss:.4f}')
-        # print(f'    Best model validation accuracy: {best_model_metrics["accuracy"]:.4f}%')
         print(f'    Best model checkpoint saved at: {best_checkpoint_path}')
 
         # Save the training details to a file
@@ -359,9 +340,6 @@ def main() -> None:
             f.write(f'Training completed at: {datetime.now()}\n')
             f.write(f'Best model step: {best_model_step}\n')
             f.write(f'Best model validation loss: {best_val_loss:.4f}\n')
-            # f.write(
-            #     f'Best model validation accuracy: {best_model_metrics["accuracy"]:.4f}%\n'
-            # )
             f.write(f'Best model checkpoint saved at: {best_checkpoint_path}\n')
         print(
             'Lyla: Congratulations on completing the training run!'
@@ -370,8 +348,6 @@ def main() -> None:
         )
 
     # After training, plot the losses
-    plot_metrics(train_losses, val_losses, coord_losses, orient_losses, 
-    angle_losses, coord_vel_losses, ang_vel_losses, 'plots/')
+    plot_metrics(train_losses, val_losses, metric_losses, 'plots/')
 
-if __name__ == '__main__':
-    main()
+if __name__ == '__main__
