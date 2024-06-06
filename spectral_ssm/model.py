@@ -25,7 +25,7 @@ class STU(nn.Module):
     """
     def __init__(
         self,
-        d_out: int = 37,
+        d_out: int = 37, # TODO: Do we need to change this?
         input_len: int = 1000,
         num_eigh: int = 24,
         auto_reg_k_u: int = 3,

@@ -71,7 +71,7 @@ def setup(rank: int, world_size: int, gpus_per_node: int) -> tuple[torch.device,
         elif torch.backends.mps.is_available():
             device = torch.device('mps')
 
-    return device, local_rank, world_size
+    return 'cpu', local_rank, world_size
 
 
 def smooth_curve(points, sigma=2):
@@ -148,21 +148,20 @@ def main() -> None:
     m_y_weight_decay: float = 0
     patience: int = 5
     checkpoint_dir: str = 'physics_checkpoints'
-    
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
     controller = 'Ant-v1'
-    train_inputs = f'data/{controller}/train_inputs.npy'
-    train_targets = f'data/{controller}/train_targets.npy'
-    val_inputs = f'data/{controller}/val_inputs.npy'
-    val_targets = f'data/{controller}/val_targets.npy'
+    train_inputs = f'data/{controller}/yagiz_train_inputs.npy'
+    train_targets = f'data/{controller}/yagiz_train_targets.npy'
+    val_inputs = f'data/{controller}/yagiz_val_inputs.npy'
+    val_targets = f'data/{controller}/yagiz_val_targets.npy'
 
     # Get dataloaders
     train_loader = physics_data.get_dataloader(train_inputs, train_targets, train_batch_size, device=device)
     val_loader = physics_data.get_dataloader(val_inputs, val_targets, val_batch_size, device=device)
     num_steps: int = len(train_loader) * num_epochs
     warmup_steps: int = num_steps // 10
-
-    if main_process:
-        os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Define the model
     spectral_ssm = model.Architecture(
@@ -258,6 +257,7 @@ def main() -> None:
                     if metric in metric_losses:
                         postfix_dict[metric] = train_metrics[metric]  # Remove the item() call here
                 pbar.set_postfix(postfix_dict)
+                pbar.update(1)
 
             scheduler.step()
 
@@ -323,6 +323,7 @@ def main() -> None:
                             f'at step {global_step}...'
                         )
                         break
+    pbar.close()
 
     # Load the best model checkpoint
     best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)
