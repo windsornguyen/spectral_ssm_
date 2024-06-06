@@ -234,7 +234,7 @@ def main() -> None:
         'angular_velocity_loss': []
     }
 
-   pbar = tqdm(range(num_epochs * len(train_loader)), desc='Training', unit='step') if main_process else range(num_epochs * len(train_loader))
+    pbar = tqdm(range(num_epochs * len(train_loader)), desc='Training', unit='step') if main_process else range(num_epochs * len(train_loader))
     for epoch in range(num_epochs):
         for global_step, (inputs, targets) in enumerate(train_loader):
             train_metrics = exp.step(inputs, targets)
