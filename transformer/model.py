@@ -293,8 +293,7 @@ class Transformer(nn.Module):
 
             total_loss += step_loss
             for key in metrics:
-                print(key)
-                metrics[key] += step_metrics[key]
+                metrics[key].append(step_metrics[key])
 
         # TODO: # If we've reached the end of the input sequence but still have steps to predict, 
         # use the last predicted state as input

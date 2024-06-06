@@ -17,21 +17,21 @@ def plot_losses(losses, title, x_values=None, ylabel='Loss'):
 
 def main():
     # Load the trained model
-    controller = 'HalfCheetah-v1'
+    controller = 'Ant-v1'
     model_path = f'best_{controller}.safetensors'
     model_args = {
         'n_layer': 6,
-        'n_embd': 24,
-        'n_head': 8,
+        'n_embd': 37,
+        'n_head': 1,
         'scale': 16,
-        'd_out': 18,
+        'd_out': 29,
         'max_len': 1_000,
         'bias': False,
         'dropout': 0.0
     }
     config = TransformerConfig(**model_args)
     model = Transformer(config)
-    model.load_state_dict(torch.load(model_path))
+    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
     model.eval()
 
     # Load the test data
