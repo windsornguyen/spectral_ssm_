@@ -11,6 +11,7 @@ import torch.nn as nn
 from spectral_ssm import stu_utils
 import time
 
+
 class STU(nn.Module):
     """Simple STU Layer.
 
@@ -56,6 +57,7 @@ class STU(nn.Module):
 
         self.m_phi = nn.Parameter(torch.zeros(self.d_out * self.k, self.d_out))
 
+
     def apply_stu(self, inputs):
         # start_time = time.time()  # Start timing
         eig_vals, eig_vecs = self.eigh
@@ -82,11 +84,13 @@ class STU(nn.Module):
 
         return y_t
 
+
     def forward(self, inputs):
         # start_time = time.time()  # Start timing for forward method
         output = torch.vmap(self.apply_stu)(inputs)
         # print(f"Total time for STU forward pass: {time.time() - start_time:.4f}s")
         return output
+
 
 class Architecture(nn.Module):
     """General model architecture."""
@@ -105,6 +109,7 @@ class Architecture(nn.Module):
             ) for _ in range(num_layers)
         ])
         self.projection = nn.Linear(d_model, d_target)
+
 
     def forward(self, inputs):
         # start_time = time.time()  # Start timing for the embedding operation
@@ -127,3 +132,59 @@ class Architecture(nn.Module):
         output = self.projection(x)
         # print(f"Time for final projection: {time.time() - start_time:.4f}s")
         return output
+
+
+    def predict(
+        self, 
+        inputs: torch.Tensor, 
+        targets: torch.Tensor, 
+        init: int = 0, 
+        t: int = 1
+    ) -> tuple[list[float], tuple[torch.Tensor, dict[str, float]]]:
+        """
+        Predicts the next states in trajectories and computes losses against the targets.
+
+        Args:
+            inputs (torch.Tensor): A tensor of shape [num_trajectories, seq_len, d_in].
+            targets (torch.Tensor): A tensor of shape [num_trajectories, seq_len, d_out].
+            init (int): The index of the initial state to start at.
+            t (int): The number of time steps to predict.
+
+        Returns:
+            A tuple containing the list of predicted states after `t` time steps and
+            a tuple containing the total loss and a dictionary of metrics.
+        """
+        device = inputs.device
+        num_trajectories, seq_len, d_in = inputs.size()
+
+        predicted_sequence = []
+        total_loss = torch.tensor(0.0, device=device)
+        metrics = {
+            'loss': [],
+            'coordinate_loss': [], 
+            'orientation_loss': [], 
+            'angle_loss': [], 
+            'coordinate_velocity_loss': [], 
+            'angular_velocity_loss': []
+        }
+
+        for i in range(t):
+            current_input_state = inputs[:, init + i, :].unsqueeze(1)
+            current_target_state = targets[:, init + i, :].unsqueeze(1)
+
+            # Predict the next state using the model
+            next_state = self.model(current_input_state)
+            loss, metric = self.loss_fn(next_state, current_target_state)
+
+            predicted_sequence.append(next_state.squeeze(1).tolist())
+
+            # Accumulate the metrics
+            for key in metrics:
+                metrics[key].append(metric[key])
+
+            # Accumulate the losses
+            total_loss += loss.item()
+
+        total_loss /= t
+
+        return predicted_sequence, (total_loss, metrics)

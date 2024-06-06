@@ -4,8 +4,9 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
 # Load the input and target data
-input_file = 'data/Walker2D/input.npy'
-target_file = 'data/Walker2D/output.npy'
+controller = 'HalfCheetah-v1'
+input_file = f'data/{controller}/3000/input.npy'
+target_file = f'data/{controller}/3000/output.npy'
 
 input_data = np.load(input_file)
 target_data = np.load(target_file)
@@ -16,23 +17,27 @@ print("Target Data Shape:", target_data.shape)
 print("Input Data Sample:", input_data[:5])
 print("Target Data Sample:", target_data[:5])
 
-# # Plot some samples
-# plt.figure(figsize=(10, 4))
-# plt.subplot(1, 2, 1)
-# plt.hist(input_data.ravel(), bins=50)
-# plt.title('Input Data Distribution')
+# Plot some samples
+plt.figure(figsize=(10, 4))
+plt.subplot(1, 2, 1)
+plt.hist(input_data.ravel(), bins=50)
+plt.title('Input Data Distribution')
 
-# plt.subplot(1, 2, 2)
-# plt.hist(target_data.ravel(), bins=50)
-# plt.title('Target Data Distribution')
+plt.subplot(1, 2, 2)
+plt.hist(target_data.ravel(), bins=50)
+plt.title('Target Data Distribution')
 
-# plt.show()
+plt.show()
 
-# # Split data into train and validation sets
-# X_train, X_val, y_train, y_val = train_test_split(input_data, target_data, test_size=0.2, random_state=42)
+# Split data into train and validation sets
+X_train, X_val, y_train, y_val = train_test_split(input_data, target_data, test_size=0.2, random_state=42)
+
+# Print dimensions of the splts
+print(f"Train inputs shape: {X_train.shape}, train targets shape: {y_train.shape}")
+print(f"Val inputs shape: {X_val.shape}, val targets shape: {y_val.shape}")
 
 # # Save the split data to .npy files
-# dataset = 'Walker2D'
+# dataset = f'{controller}/3000'
 # data_dir = os.path.join('data', dataset)
 # os.makedirs(data_dir, exist_ok=True)
 

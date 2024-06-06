@@ -147,9 +147,9 @@ def main() -> None:
 
     # Hyperparameters
     train_batch_size: int = 10 // world_size # scale batch size for distributed training
-    eval_batch_size: int = 10 // world_size  # scale batch size for distributed training
-    num_steps: int = 3_500 // 12
-    eval_period: int = 25
+    val_batch_size: int = 10 // world_size  # scale batch size for distributed training
+    num_steps: int = 3_500 // 6
+    eval_period: int = 50
     warmup_steps: int = 350 // 12
     learning_rate: float = 5e-4
     weight_decay: float = 1e-1
@@ -162,8 +162,8 @@ def main() -> None:
 
     # Define the model
     spectral_ssm = model.Architecture(
-        d_model=37,
-        d_target=29,
+        d_model=24,
+        d_target=18,
         num_layers=6,
         dropout=0.1,
         input_len=1000,
@@ -173,6 +173,7 @@ def main() -> None:
         learnable_m_y=True,
     ).to(device)
 
+    print(sum(p.numel() for p in spectral_ssm.parameters()) / 1e6, 'M parameters')
 
     # Wrap the model with DistributedDataParallel for distributed training
     # TODO: Distributed code is not ready yet
@@ -211,8 +212,15 @@ def main() -> None:
         else:
             print(f'{msg} {device} today.')
 
-    train_loader = physics_data.get_dataloader('spectral_ssm/input_data.npy', 'spectral_ssm/target_data.npy', train_batch_size)
-    eval_loader = physics_data.get_dataloader('spectral_ssm/input_data_eval.npy', 'spectral_ssm/target_data_eval.npy', eval_batch_size)
+    controller = 'Walker2D-v1'
+    train_inputs = f'transformer/data/{controller}/3000/train_inputs.npy'
+    train_targets = f'transformer/data/{controller}/3000/train_targets.npy'
+    val_inputs = f'transformer/data/{controller}/3000/val_inputs.npy'
+    val_targets = f'transformer/data/{controller}/3000/val_targets.npy'
+
+    # Get dataloaders
+    train_loader = physics_data.get_dataloader(train_inputs, train_targets, train_batch_size, device=device)
+    val_loader = physics_data.get_dataloader(val_inputs, val_targets, val_batch_size, device=device)
 
     if main_process:
         print(

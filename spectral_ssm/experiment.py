@@ -1,4 +1,3 @@
-
 # ==============================================================================#
 # Authors: Windsor Nguyen, Dwaipayan Saha
 # File: experiment.py
@@ -48,7 +47,7 @@ class Experiment:
             targets (torch.Tensor): A batch of target labels.
 
         Returns:
-            Dict[str, float]: A Dictionary of metrics for the training step.
+            dict[str, float]: A dictionary of metrics for the training step.
         """
         self.model.train()
         inputs, targets = inputs.to(self.device), targets.to(self.device)

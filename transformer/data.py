@@ -15,7 +15,7 @@ class PhysicsDataset(Dataset):
             ctxt_len (int): Context length for each sample.
         """
         self.device = device
-        
+
         # Shape (batch_size, 1000, 37), for testing batch_size=10
         self.inputs = torch.tensor(np.load(input_file), dtype=torch.float32).to(device)
         

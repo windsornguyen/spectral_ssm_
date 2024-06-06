@@ -14,7 +14,7 @@ def tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     Args:
         v (torch.Tensor): Tensor of shape [seq_len,].
         u (torch.Tensor): Tensor of shape [seq_len,].
-    
+
     Returns:
         torch.Tensor: Convolution result of shape [seq_len,].
     """

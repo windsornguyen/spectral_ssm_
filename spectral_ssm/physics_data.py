@@ -14,7 +14,6 @@ class PhysicsDataset(Dataset):
         """
         self.inputs = np.load(input_file)  # Shape (n, 1000, 37), for testing n=5
         self.targets = np.load(target_file)  # Shape (n, 1000, 29)
-        print(f"inputs shape: {self.inputs.shape}, targets shape: {self.targets.shape}")
 
     def __len__(self):
         """Denotes the total number of samples."""
@@ -31,9 +30,9 @@ class PhysicsDataset(Dataset):
 
         return x_t, x_t_plus_1
 
-def get_dataloader(input_file, target_file, batch_size, shuffle=False, num_workers=1):
+def get_dataloader(inputs, targets, batch_size, shuffle=False, device=None, num_workers=1):
     """Create a DataLoader for the given dataset."""
-    dataset = PhysicsDataset(input_file, target_file)
+    dataset = PhysicsDataset(inputs, targets)
     return DataLoader(
         dataset,
         batch_size=batch_size,

@@ -28,9 +28,12 @@ class Walker2DLoss(nn.Module):
                 Tuple[torch.Tensor, Dict[str, float]]: 
                 A Tuple of the loss and a Dictionary of metrics.
             """
+            print('here')
             total_loss = torch.tensor(0.0, device=outputs.device)
             for i in range(outputs.shape[1]):
+                print('here2')
                 loss = (outputs[:, i] - targets[:, i]) ** 2
+                print('here3')
 
                 # scaling by constant just for now
                 if i in (0, 1):  # coordinates of the front tip

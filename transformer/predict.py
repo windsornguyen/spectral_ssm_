@@ -1,20 +1,33 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter1d
 from model import Transformer, TransformerConfig
+
+def smooth_curve(points, sigma=2):
+    return gaussian_filter1d(points, sigma=sigma)
+
+def plot_losses(losses, title, x_values=None, ylabel='Loss'):
+    if x_values is None:
+        x_values = list(range(len(losses)))
+    plt.plot(x_values, smooth_curve(losses), label=title)
+    plt.xlabel('Time Step')
+    plt.ylabel(ylabel)
+    plt.legend()
 
 def main():
     # Load the trained model
-    model_path = 'best_model.safetensors'
+    controller = 'HalfCheetah-v1'
+    model_path = f'best_{controller}.safetensors'
     model_args = {
         'n_layer': 6,
-        'n_head': 1,
-        'n_embd': 37,
-        'scale': 4,
-        'd_out': 29,
+        'n_embd': 24,
+        'n_head': 8,
+        'scale': 16,
+        'd_out': 18,
         'max_len': 1_000,
-        'bias': True,
-        'dropout': 0.25
+        'bias': False,
+        'dropout': 0.0
     }
     config = TransformerConfig(**model_args)
     model = Transformer(config)
@@ -22,60 +35,60 @@ def main():
     model.eval()
 
     # Load the test data
-    test_inputs = 'data/Ant-v1/test_inputs.npy'
-    test_targets = 'data/Ant-v1/test_targets.npy'
+    test_inputs = f'data/{controller}/test_inputs.npy'
+    test_targets = f'data/{controller}/test_targets.npy'
     test_inputs = torch.tensor(np.load(test_inputs), dtype=torch.float32)
     test_targets = torch.tensor(np.load(test_targets), dtype=torch.float32)
-    # Print dims of inputs and targets
-    print(test_inputs.shape, test_targets.shape)
-  
+
     # Select a specific slice of trajectories
     seq_idx = 0
-    input_trajectories = test_inputs[seq_idx:seq_idx+5]  # Select 5 input trajectories starting from seq_idx
-    target_trajectories = test_targets[seq_idx:seq_idx+5]  # Select 5 target trajectories starting from seq_idx
-    # Print dims of inputs and targets
-    print(input_trajectories.shape, target_trajectories.shape)
+    num_trajectories = 5
+    input_trajectories = test_inputs[seq_idx:seq_idx+num_trajectories]
+    target_trajectories = test_targets[seq_idx:seq_idx+num_trajectories]
+
     # Predict the next states using the model
-    init_idx = 0
-    t = 100  # Number of time steps to predict
-    predicted_states, loss = model.predict(input_trajectories, targets=target_trajectories, init=init_idx, t=t)
+    predicted_states, loss = model.predict(input_trajectories, targets=target_trajectories)
 
     # Extract the individual losses from the loss tuple
-    _, metrics = loss
-    coordinate_loss = metrics['coordinate_loss']
-    orientation_loss = metrics['orientation_loss']
-    angle_loss = metrics['angle_loss']
-    coordinate_velocity_loss = metrics['coordinate_velocity_loss']
-    angular_velocity_loss = metrics['angular_velocity_loss']
+    total_loss, metrics = loss
+    coordinate_loss = metrics['coordinate_loss'].detach().cpu().numpy()
+    orientation_loss = metrics['orientation_loss'].detach().cpu().numpy()
+    angle_loss = metrics['angle_loss'].detach().cpu().numpy()
+    coordinate_velocity_loss = metrics['coordinate_velocity_loss'].detach().cpu().numpy()
+    angular_velocity_loss = metrics['angular_velocity_loss'].detach().cpu().numpy()
+
+    # Set up plotting style
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, axs = plt.subplots(2, 2, figsize=(12, 8))
 
     # Plot the predicted states and ground truth states
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(range(init_idx, init_idx + t), target_trajectories[0, init_idx:init_idx + t, 0], label='Ground Truth')
-    ax.plot(range(init_idx, init_idx + t), [state[0] for state in predicted_states], label='Predicted')
-    ax.set_xlabel('Time Step')
-    ax.set_ylabel('State')
-    ax.set_title('Predicted vs Ground Truth States')
-    ax.legend()
+    for traj_idx in range(num_trajectories):
+        axs[0, 0].plot(range(input_trajectories.shape[1] - 1), target_trajectories[traj_idx, 1:, 0].detach().cpu().numpy(), label=f'Ground Truth {traj_idx+1}')
+        axs[0, 0].plot(range(input_trajectories.shape[1] - 1), predicted_states[traj_idx, :, 0].detach().cpu().numpy(), label=f'Predicted {traj_idx+1}')
+    axs[0, 0].set_xlabel('Time Step')
+    axs[0, 0].set_ylabel('State')
+    axs[0, 0].set_title('Predicted vs Ground Truth States')
+    axs[0, 0].legend()
+
+    # Plot the total loss
+    axs[0, 1].plot(range(input_trajectories.shape[1] - 1), total_loss.detach().cpu().numpy())
+    axs[0, 1].set_xlabel('Time Step')
+    axs[0, 1].set_ylabel('Loss')
+    axs[0, 1].set_title('Total Loss')
 
     # Plot the individual losses
-    fig2, axs = plt.subplots(2, 3, figsize=(15, 8))
-    axs[0, 0].plot(range(init_idx, init_idx + t), coordinate_loss)
-    axs[0, 0].set_title('Coordinate Loss')
-    axs[0, 1].plot(range(init_idx, init_idx + t), orientation_loss)
-    axs[0, 1].set_title('Orientation Loss')
-    axs[0, 2].plot(range(init_idx, init_idx + t), angle_loss)
-    axs[0, 2].set_title('Angle Loss')
-    axs[1, 0].plot(range(init_idx, init_idx + t), coordinate_velocity_loss)
-    axs[1, 0].set_title('Coordinate Velocity Loss')
-    axs[1, 1].plot(range(init_idx, init_idx + t), angular_velocity_loss)
-    axs[1, 1].set_title('Angular Velocity Loss')
-    axs[1, 2].axis('off')  # Leave the last subplot empty
+    axs[1, 0].plot(range(input_trajectories.shape[1] - 1), coordinate_loss, label='Coordinate Loss')
+    axs[1, 0].plot(range(input_trajectories.shape[1] - 1), orientation_loss, label='Orientation Loss')
+    axs[1, 0].plot(range(input_trajectories.shape[1] - 1), angle_loss, label='Angle Loss')
+    axs[1, 0].plot(range(input_trajectories.shape[1] - 1), coordinate_velocity_loss, label='Coordinate Velocity Loss')
+    axs[1, 0].plot(range(input_trajectories.shape[1] - 1), angular_velocity_loss, label='Angular Velocity Loss')
+    axs[1, 0].set_xlabel('Time Step')
+    axs[1, 0].set_ylabel('Loss')
+    axs[1, 0].set_title('Individual Losses')
+    axs[1, 0].legend()
 
-    for ax in axs.flat:
-        ax.set(xlabel='Time Step', ylabel='Loss')
-
-    fig2.tight_layout()
-
+    plt.tight_layout()
+    plt.savefig('results/prediction_analysis.png', dpi=300, bbox_inches='tight')
     plt.show()
 
 if __name__ == '__main__':

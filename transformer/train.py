@@ -1,47 +1,64 @@
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
-import os
-import numpy as np
+from scipy.ndimage import gaussian_filter1d
 from tqdm import tqdm
-import matplotlib.pyplot as plt
 
-from model import Transformer, TransformerConfig
 from data import get_dataloader
+from model import Transformer, TransformerConfig
+
+
+def smooth_curve(points, sigma=2):
+    return gaussian_filter1d(points, sigma=sigma)
+
+def plot_losses(losses, title, eval_interval=None, ylabel='Loss'):
+    if eval_interval:
+        x_values = [i * eval_interval for i in range(len(losses))]
+    else:
+        x_values = list(range(len(losses)))
+    plt.plot(x_values, smooth_curve(losses), label=title)
+    plt.xlabel('Steps')
+    plt.ylabel(ylabel)
+    plt.legend()
+
 
 def main():
-    # hyperparameters
-    batch_size = 5  # how many independent sequences will we process in parallel?
-    max_len = 1_000  # what is the maximum context length for predictions?
-    max_iters = 3_500 // 6
-    eval_interval = 50
-    learning_rate = 1e-3
-    device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
-    print('Running on device:', device)
-    n_embd = 37
-    d_out = 29
-    n_head = 1
-    scale = 4 # 4 is default
-    n_layer = 6
-    dropout = 0.25
-    bias = True
-    patience = 10  # Number of validation steps to wait for improvement
-    # ------------
-
     # Set seed for reproducibility
     torch.manual_seed(1337)
 
-    # data loading
-    train_inputs = 'data/Ant-v1/yagiz_train_inputs.npy'
-    train_targets = 'data/Ant-v1/yagiz_train_targets.npy'
-    val_inputs = 'data/Ant-v1/yagiz_val_inputs.npy'
-    val_targets = 'data/Ant-v1/yagiz_val_targets.npy'
+    # Hyperparameters
+    batch_size = 128  # how many independent sequences will we process in parallel?
+    max_len = 1_000  # what is the maximum context length for predictions?
+    max_iters = 3_500 // 6
+    eval_interval = (max_iters / 10) // 6
+    learning_rate = 1e-3
+    device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
+    print('Running on device:', device)
+    n_embd = 24
+    d_out = 18
+    n_head = 1 # Constraint: n_embd % n_head == 0
+    scale = 16 # 4 is default
+    n_layer = 6
+    dropout = 0.0
+    bias = False
+    patience = 10  # Number of validation steps to wait for improvement
+
+    # Data loading
+    controller = 'HalfCheetah-v1' # If not Ant-v1, add /3000/ after {controller}
+    train_inputs = f'data/{controller}/3000/train_inputs.npy'
+    train_targets = f'data/{controller}/3000/train_targets.npy'
+    val_inputs = f'data/{controller}/3000/val_inputs.npy'
+    val_targets = f'data/{controller}/3000/val_targets.npy'
 
     # Get dataloaders
     train_loader = get_dataloader(train_inputs, train_targets, 'train', batch_size, device)
     val_loader = get_dataloader(val_inputs, val_targets, 'val', batch_size, device)
 
     @torch.no_grad()
-    def evaluate(loader):
+    def evaluate(model, loader):
         print('Evaluating on validation set...')
         model.eval()
         losses = []
@@ -69,15 +86,13 @@ def main():
     m = model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 
-    # Print the number of parameters in the model
-    print(sum(p.numel() for p in m.parameters()) / 1e6, 'M parameters')
-
     best_val_loss = float('inf')
     patience_counter = 0
 
     # Initialize lists to store losses
     train_losses = []
     val_losses = []
+    grad_norms = []
     coord_losses = []
     orient_losses = []
     angle_losses = []
@@ -86,24 +101,11 @@ def main():
 
     pbar = tqdm(range(max_iters), desc='Training', unit='iter')
     val_loss = None
-    for step, (xb, yb) in zip(pbar, train_loader):    
-        # every once in a while evaluate the loss on train and val sets
-        if (step != 0 and step % eval_interval == 0) or step == max_iters - 1:
-            val_loss = evaluate(val_loader)
-            val_losses.append(val_loss)
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-                torch.save(model.state_dict(), 'best_model.safetensors')
-            else:
-                patience_counter += 1
-            
-            if patience_counter >= patience:
-                print(f'Early stopping triggered. Best validation loss: {best_val_loss:.4f}')
-                break
-            
-        # Evaluate the loss
+    for step in pbar:
+        xb, yb = next(iter(train_loader))
         xb, yb = xb.to(device), yb.to(device)
+        
+        # Evaluate the loss
         preds, loss = model(xb, yb)
         loss, metrics = loss
 
@@ -136,6 +138,25 @@ def main():
                 if torch.isnan(param.grad).any():
                     print(f"NaN gradient in {name}")
         grad_norm = grad_norm ** 0.5
+        grad_norms.append(grad_norm)
+
+        optimizer.step()
+
+        # Evaluate on validation set
+        if (step != 0 and step % eval_interval == 0) or step == max_iters - 1:
+            val_loss = evaluate(model, val_loader)
+            val_losses.append(val_loss)
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+                torch.save(model.state_dict(), f'best_{controller}.safetensors')
+            else:
+                patience_counter += 1
+
+            if patience_counter >= patience:
+                print(f'Early stopping triggered. Best validation loss: {best_val_loss:.4f}')
+                break
+
         pbar.set_postfix({
             'tr_loss': loss.item(),
             'val_loss': val_loss,
@@ -147,29 +168,31 @@ def main():
             'angle_vel_loss': metrics['angular_velocity_loss']
         })
 
-        optimizer.step()
+    plt.style.use('seaborn-v0_8-whitegrid')
+    if not os.path.exists('results'):
+        os.makedirs('results')
 
-    # After training, plot the losses
+    # Plot training and validation losses (main losses - losses.png)
     plt.figure(figsize=(10, 5))
-    plt.plot(train_losses, label='Training Loss')
-    plt.plot([i * eval_interval for i in range(len(val_losses))], val_losses, label='Validation Loss')
-    plt.title('Losses over Time')
-    plt.xlabel('Time Step')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.show()
+    plot_losses(train_losses, 'Training Loss')
+    plot_losses(val_losses, 'Validation Loss', eval_interval)
+    plt.title(f'Training and Validation Losses on {controller} Task')
+    plt.tight_layout()
+    plt.savefig(f'results/{controller}_losses.png', dpi=300)
+    plt.close()
 
+    # Plot other losses and gradient norm (other losses - details.png)
     plt.figure(figsize=(10, 5))
-    plt.plot(coord_losses, label='Coordinate Loss')
-    plt.plot(orient_losses, label='Orientation Loss')
-    plt.plot(angle_losses, label='Angle Loss')
-    plt.plot(coord_vel_losses, label='Coordinate Velocity Loss')
-    plt.plot(ang_vel_losses, label='Angular Velocity Loss')
-    plt.title('Other Losses over Time')
-    plt.xlabel('Time Step')
-    plt.ylabel('Loss')
-    plt.legend()
-    plt.show()
+    plot_losses(coord_losses, 'Coordinate Loss')
+    plot_losses(orient_losses, 'Orientation Loss')
+    plot_losses(angle_losses, 'Angle Loss')
+    plot_losses(coord_vel_losses, 'Coordinate Velocity Loss')
+    plot_losses(ang_vel_losses, 'Angular Velocity Loss')
+    plot_losses(grad_norms, 'Gradient Norm', ylabel='Gradient Norm')
+    plt.title('Other Losses, Gradient Norm over Time')
+    plt.tight_layout()
+    plt.savefig(f'results/{controller}_details.png', dpi=300)
+    plt.close()
 
 if __name__ == '__main__':
     main()
