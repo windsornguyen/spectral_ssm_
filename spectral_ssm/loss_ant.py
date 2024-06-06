@@ -67,7 +67,7 @@ class AntLoss(nn.Module):
         angular_velocity_loss /= 8
 
         metrics = {
-            # 'loss': total_loss.item(), 
+            'loss': total_loss.item(), 
             'coordinate_loss': coordinate_loss.item(), 
             'orientation_loss': orientation_loss.item(), 
             'angle_loss': angle_loss.item(), 

@@ -89,7 +89,7 @@ def plot_losses(losses, title, eval_interval=None, ylabel='Loss'):
     plt.legend()
 
 
-def plot_metrics(train_losses, val_losses, metric_losses, output_dir):
+def plot_metrics(train_losses, val_losses, metric_losses, output_dir, controller):
     plt.style.use('seaborn-v0_8-whitegrid')
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -101,15 +101,18 @@ def plot_metrics(train_losses, val_losses, metric_losses, output_dir):
     plt.title(f'Training and Validation Losses on {controller} Task')
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f'{controller}_losses.png'), dpi=300)
+    plt.show()
     plt.close()
 
     # Plot other losses (other losses - details.png)
     plt.figure(figsize=(10, 5))
     for metric, losses in metric_losses.items():
         plot_losses(losses, metric)
-    plt.title('Other Losses over Time')
+    plot_losses(grad_norms, 'Gradient Norm', ylabel='Gradient Norm')
+    plt.title(f'Other Losses, Gradient Norm Over Time on {controller} Task')
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f'{controller}_details.png'), dpi=300)
+    plt.show()
     plt.close()
 
 
@@ -135,17 +138,29 @@ def main() -> None:
         )
 
     # Hyperparameters
-    train_batch_size: int = 10 // world_size # scale batch size for distributed training
-    val_batch_size: int = 10 // world_size  # scale batch size for distributed training
-    num_steps: int = 3_500 // 6
-    eval_period: int = 50
-    warmup_steps: int = 350 // 12
-    learning_rate: float = 5e-4
+    train_batch_size: int = 5 // world_size # scale batch size for distributed training
+    val_batch_size: int = 5 // world_size  # scale batch size for distributed training
+    num_epochs: int = 3
+    eval_period: int = 100
+    learning_rate: float = 7.5e-4
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
     m_y_weight_decay: float = 0
-    patience: int = 10
-    checkpoint_dir: str = 'checkpoints'
+    patience: int = 5
+    checkpoint_dir: str = 'physics_checkpoints'
+    
+    controller = 'HalfCheetah-v1'
+    train_inputs = f'transformer/data/{controller}/3000/train_inputs.npy'
+    train_targets = f'transformer/data/{controller}/3000/train_targets.npy'
+    val_inputs = f'transformer/data/{controller}/3000/val_inputs.npy'
+    val_targets = f'transformer/data/{controller}/3000/val_targets.npy'
+
+    # Get dataloaders
+    train_loader = physics_data.get_dataloader(train_inputs, train_targets, train_batch_size, device=device)
+    val_loader = physics_data.get_dataloader(val_inputs, val_targets, val_batch_size, device=device)
+    num_steps: int = len(train_loader) * num_epochs
+    warmup_steps: int = num_steps // 10
+
     if main_process:
         os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -154,7 +169,7 @@ def main() -> None:
         d_model=24,
         d_target=18,
         num_layers=6,
-        dropout=0.1,
+        dropout=0.25,
         input_len=1000,
         num_eigh=24,
         auto_reg_k_u=3,
@@ -184,7 +199,6 @@ def main() -> None:
         m_y_weight_decay=m_y_weight_decay,
     )
 
-    controller = 'Walker2D-v1'
     loss_fn = HalfCheetahLoss() if controller == 'HalfCheetah-v1' else Walker2DLoss() if controller == 'Walker2D-v1' else AntLoss()
     exp = experiment.Experiment(model=spectral_ssm, loss_fn=loss_fn, optimizer=opt, device=device)
     msg = "Lyla: We'll be training with"
@@ -198,21 +212,6 @@ def main() -> None:
         else:
             print(f'{msg} {device} today.')
 
-    train_inputs = f'transformer/data/{controller}/3000/train_inputs.npy'
-    train_targets = f'transformer/data/{controller}/3000/train_targets.npy'
-    val_inputs = f'transformer/data/{controller}/3000/val_inputs.npy'
-    val_targets = f'transformer/data/{controller}/3000/val_targets.npy'
-
-    # Get dataloaders
-    train_loader = physics_data.get_dataloader(train_inputs, train_targets, train_batch_size, device=device)
-    val_loader = physics_data.get_dataloader(val_inputs, val_targets, val_batch_size, device=device)
-
-    if main_process:
-        print(
-            "Lyla: All set! Everything's loaded up and ready to go. "
-            'May the compute Gods be by our sides...'
-        )
-
     best_val_loss = float('inf')
     eval_periods_without_improvement = 0
     best_model_step = 0
@@ -224,6 +223,9 @@ def main() -> None:
     # Initialize lists to store losses
     train_losses = []
     val_losses = []
+    grad_norms = []
+
+    # Check available individual losses once before the training loop
     metric_losses = {
         'coordinate_loss': [],
         'orientation_loss': [],
@@ -232,95 +234,95 @@ def main() -> None:
         'angular_velocity_loss': []
     }
 
-    pbar = tqdm(range(num_steps), desc='Training Progress', unit='step') if main_process else range(num_steps)
-    for global_step in pbar:
-        inputs, targets = next(iter(train_loader))
-        train_metrics = exp.step(inputs, targets)
+   pbar = tqdm(range(num_epochs * len(train_loader)), desc='Training', unit='step') if main_process else range(num_epochs * len(train_loader))
+    for epoch in range(num_epochs):
+        for global_step, (inputs, targets) in enumerate(train_loader):
+            train_metrics = exp.step(inputs, targets)
 
-        # Append the losses
-        train_losses.append(train_metrics["loss"])
-        for metric in metric_losses:
-            if metric in train_metrics:
-                metric_losses[metric].append(train_metrics[metric])
+            # Append the losses
+            train_losses.append(train_metrics["loss"])
+            for metric in metric_losses:
+                if metric in train_metrics:
+                    metric_losses[metric].append(train_metrics[metric])
 
-        if main_process:
-            current_lrs = scheduler.get_last_lr()
-            default_lr = current_lrs[0]
-            m_y_lr = current_lrs[1]
-            lrs = f"{default_lr:.2e}, m_y_lr={m_y_lr:.2e}"
-            postfix_dict = {
-                'tr_loss': train_metrics["loss"].item(),
-                'lr': lrs
-            }
-            for metric in train_metrics:
-                if metric in metric_losses:
-                    postfix_dict[metric] = train_metrics[metric].item()
-            pbar.set_postfix(postfix_dict)
-
-        scheduler.step()
-
-        if global_step > 0 and global_step % eval_period == 0:
             if main_process:
-                print(f"\nLyla: Lyla here! We've reached step {global_step}.")
-                print(
-                    "Lyla: It's time for an evaluation update! Let's see how our model is doing..."
-                )
+                current_lrs = scheduler.get_last_lr()
+                default_lr = current_lrs[0]
+                m_y_lr = current_lrs[1]
+                lrs = f"{default_lr:.2e}, m_y_lr={m_y_lr:.2e}"
+                postfix_dict = {
+                    'tr_loss': train_metrics["loss"],
+                    'lr': lrs
+                }
+                for metric in train_metrics:
+                    if metric in metric_losses:
+                        postfix_dict[metric] = train_metrics[metric]  # Remove the item() call here
+                pbar.set_postfix(postfix_dict)
 
-            val_metrics = exp.evaluate(val_loader)
-            val_losses.append(val_metrics['loss'])
-    
-            if world_size > 1:
-                # Gather evaluation metrics from all processes
-                gathered_metrics = [None] * world_size
-                torch.distributed.all_gather_object(gathered_metrics, val_metrics)
-                
+            scheduler.step()
+
+            if global_step > 0 and global_step % eval_period == 0:
                 if main_process:
-                    # Aggregate metrics across all processes
-                    total_loss = sum(metric['loss'] for metric in gathered_metrics) / world_size
+                    print(f"\nLyla: Lyla here! We've reached step {global_step}.")
                     print(
-                        f'\nLyla: Evaluating the model on step {global_step}'
-                        f' Average Loss: {total_loss:.4f}.'
+                        "Lyla: It's time for an evaluation update! Let's see how our model is doing..."
                     )
-                    val_metrics = {'loss': total_loss}
-            else:
-                if main_process:
-                    print(
-                    f'\nLyla: Evaluating the model on step {global_step}'
-                    f' Loss: {val_metrics["loss"]:.2f}.'
-                )
 
-            if main_process:
-                val_loss = val_metrics['loss']
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    best_model_step = global_step
-                    best_model_metrics = val_metrics
-                    eval_periods_without_improvement = 0
-                    timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-                    checkpoint_filename = f'checkpoint-step{global_step}-{timestamp}.pt'
-                    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
-                    best_checkpoint = checkpoint_filename
+                val_metrics = exp.evaluate(val_loader)
+                val_losses.append(val_metrics['loss'])
+        
+                if world_size > 1:
+                    # Gather evaluation metrics from all processes
+                    gathered_metrics = [None] * world_size
+                    torch.distributed.all_gather_object(gathered_metrics, val_metrics)
                     
-                    torch.save(spectral_ssm.state_dict(), checkpoint_path)
-                    print(
-                        f'Lyla: Wow! We have a new personal best at step {global_step}.'
-                        f' The validation loss improved to: {val_loss:.4f}!'
-                        f' Checkpoint saved as {checkpoint_path}'
-                    )
+                    if main_process:
+                        # Aggregate metrics across all processes
+                        total_loss = sum(metric['loss'] for metric in gathered_metrics) / world_size
+                        print(
+                            f'\nLyla: Evaluating the model on step {global_step}'
+                            f' Average Loss: {total_loss:.4f}.'
+                        )
+                        val_metrics = {'loss': total_loss}
                 else:
-                    eval_periods_without_improvement += 1
-                    print(
-                        f'Lyla: No improvement in validation loss for '
-                        f'{eval_periods_without_improvement} eval periods. '
-                        f'Current best loss: {best_val_loss:.4f}.'
+                    if main_process:
+                        print(
+                        f'\nLyla: Evaluating the model on step {global_step}'
+                        f' Loss: {val_metrics["loss"]:.2f}.'
                     )
-                if eval_periods_without_improvement >= patience:
-                    print(
-                        f'Lyla: We have reached the patience limit of {patience} '
-                        f'epochs without improvement. Stopping the training early '
-                        f'at step {global_step}...'
-                    )
-                    break
+
+                if main_process:
+                    val_loss = val_metrics['loss']
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_model_step = global_step
+                        best_model_metrics = val_metrics
+                        eval_periods_without_improvement = 0
+                        timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+                        checkpoint_filename = f'checkpoint-step{global_step}-{timestamp}.pt'
+                        checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
+                        best_checkpoint = checkpoint_filename
+                        
+                        torch.save(spectral_ssm.state_dict(), checkpoint_path)
+                        print(
+                            f'Lyla: Wow! We have a new personal best at step {global_step}.'
+                            f' The validation loss improved to: {val_loss:.4f}!'
+                            f' Checkpoint saved as {checkpoint_path}'
+                        )
+                    else:
+                        eval_periods_without_improvement += 1
+                        print(
+                            f'Lyla: No improvement in validation loss for '
+                            f'{eval_periods_without_improvement} eval periods. '
+                            f'Current best loss: {best_val_loss:.4f}.'
+                        )
+                    if eval_periods_without_improvement >= patience:
+                        print(
+                            f'Lyla: We have reached the patience limit of {patience} '
+                            f'epochs without improvement. Stopping the training early '
+                            f'at step {global_step}...'
+                        )
+                        break
 
     # Load the best model checkpoint
     best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)
@@ -348,6 +350,8 @@ def main() -> None:
         )
 
     # After training, plot the losses
-    plot_metrics(train_losses, val_losses, metric_losses, 'plots/')
+    plot_metrics(train_losses, val_losses, metric_losses, 'plots/', controller)
 
-if __name__ == '__main__
+
+if __name__ == '__main__':
+    main()

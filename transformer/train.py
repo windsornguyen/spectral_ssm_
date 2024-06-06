@@ -56,8 +56,9 @@ def evaluate(model, loader):
 
 
 def main():
-    # Set seed for reproducibility
+    # Set seeds for reproducibility
     torch.manual_seed(42)
+    np.random.seed(42)
 
     # Hyperparameters
     batch_size = 5  # How many independent sequences will we process in parallel?
@@ -67,9 +68,9 @@ def main():
     lr = 7.5e-4
     device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
     print('Running on device:', device)
-    n_embd = 24
-    d_out = 18
-    n_head = 8 # Constraint: n_embd % n_head == 0
+    n_embd = 37
+    d_out = 29
+    n_head = 1 # Constraint: n_embd % n_head == 0
     scale = 16 # 4 is default
     n_layer = 6
     dropout = 0.25
@@ -77,11 +78,11 @@ def main():
     patience = 5  # Number of validation steps to wait for improvement
 
     # Data loading
-    controller = 'Walker2D-v1' # If not Ant-v1, add /3000/ after {controller} and change the loss function
-    train_inputs = f'data/{controller}/3000/train_inputs.npy'
-    train_targets = f'data/{controller}/3000/train_targets.npy'
-    val_inputs = f'data/{controller}/3000/val_inputs.npy'
-    val_targets = f'data/{controller}/3000/val_targets.npy'
+    controller = 'Ant-v1' # If not Ant-v1, add /3000/ after {controller} and change the loss function
+    train_inputs = f'data/{controller}/yagiz_train_inputs.npy'
+    train_targets = f'data/{controller}/yagiz_train_targets.npy'
+    val_inputs = f'data/{controller}/yagiz_val_inputs.npy'
+    val_targets = f'data/{controller}/yagiz_val_targets.npy'
     print(f'Training on {controller} task.')
 
     # Get dataloaders
@@ -109,7 +110,7 @@ def main():
     if hasattr(torch.nn.functional, 'scaled_dot_product_attention'):
         print(f'PyTorch >= 2.0 detected. '
               'Using Memory-Efficient Attention (Rabe et al., 2022) '
-              'and Flash Attention (Dao et al. 2023).'
+              'and Flash Attention (Dao et al., 2023).'
         )
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
@@ -208,6 +209,7 @@ def main():
     plt.title(f'Training and Validation Losses on {controller} Task')
     plt.tight_layout()
     plt.savefig(f'results/{controller}_losses.png', dpi=300)
+    plt.show()
     plt.close()
 
     # Plot other losses and gradient norm (other losses - details.png)
@@ -218,6 +220,7 @@ def main():
     plt.title(f'Other Losses, Gradient Norm Over Time on {controller} Task')
     plt.tight_layout()
     plt.savefig(f'results/{controller}_details.png', dpi=300)
+    plt.show()
     plt.close()
 
 if __name__ == '__main__':
