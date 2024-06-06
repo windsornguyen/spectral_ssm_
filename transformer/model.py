@@ -260,7 +260,7 @@ class Transformer(nn.Module):
 
         # Initialize the predicted sequence and losses
         predicted_sequence = torch.zeros(num_trajectories, steps, self.config.d_out, device=device)
-        ar_sequence = torch.zeros(num_trajectories, steps, self.config.d_out, device=device)
+        ar_sequence = torch.zeros(num_trajectories, steps, d_in, device=device)
         total_loss = torch.tensor(0.0, device=device)
         metrics = {
             'coordinate_loss': torch.tensor(0.0, device=device),
@@ -270,6 +270,7 @@ class Transformer(nn.Module):
             'angular_velocity_loss': torch.tensor(0.0, device=device)
         }
 
+        # ar_sequence[:, i + 1, :].append(inputs[:, i + 1 + init, u_start:u_end])
         ar_sequence[:, 0, :] = inputs[:, init, :]
         u_start = targets.shape[2]+1
         u_end = inputs.shape[2]+1

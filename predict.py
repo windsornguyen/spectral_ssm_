@@ -14,9 +14,9 @@ def main():
         'auto_reg_k_y': 2,
         'learnable_m_y': True,
     }
-    model = model.STU(**model_args)
-    model.load_state_dict(torch.load(model_path))
-    model.eval()
+    m = model.STU(**model_args)
+    m.load_state_dict(torch.load(model_path))
+    m.eval()
 
     # Load the test data
     test_inputs = 'data/Ant-v1/test_inputs.npy'
@@ -36,7 +36,7 @@ def main():
     # Predict the next states using the model
     init_idx = 0
     t = 100  # Number of time steps to predict
-    predicted_states, losses = model.predict(test_inputs, test_targets, init=init_idx, t=t)
+    predicted_states, losses = m.predict(test_inputs, test_targets, init=init_idx, t=t)
 
     # Extract the individual losses from the loss tuple
     total_loss, metrics = losses

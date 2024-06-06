@@ -141,8 +141,7 @@ def main() -> None:
     train_batch_size: int = 5 // world_size # scale batch size for distributed training
     val_batch_size: int = 5 // world_size  # scale batch size for distributed training
     num_epochs: int = 3
-    # eval_period: int = 100
-    eval_period: int = 1
+    eval_period: int = 100
     learning_rate: float = 7.5e-4
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
@@ -236,7 +235,7 @@ def main() -> None:
     }
 
     pbar = tqdm(range(num_epochs * len(train_loader)), desc='Training', unit='step') if main_process else range(num_epochs * len(train_loader))
-    for epoch in range(1):
+    for epoch in range(num_epochs):
         for global_step, (inputs, targets) in enumerate(train_loader):
             train_metrics = exp.step(inputs, targets)
 
@@ -276,7 +275,7 @@ def main() -> None:
                     # Gather evaluation metrics from all processes
                     gathered_metrics = [None] * world_size
                     torch.distributed.all_gather_object(gathered_metrics, val_metrics)
-                    
+
                     if main_process:
                         # Aggregate metrics across all processes
                         total_loss = sum(metric['loss'] for metric in gathered_metrics) / world_size
@@ -324,9 +323,6 @@ def main() -> None:
                             f'at step {global_step}...'
                         )
                         break
-
-            if global_step > 3:
-                break
 
     # Load the best model checkpoint
     best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)

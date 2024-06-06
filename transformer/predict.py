@@ -31,12 +31,12 @@ def main():
     }
     config = TransformerConfig(**model_args)
     model = Transformer(config)
-    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load(model_path))
     model.eval()
 
     # Load the test data
-    test_inputs = f'data/{controller}/test_inputs.npy'
-    test_targets = f'data/{controller}/test_targets.npy'
+    test_inputs = f'../data/{controller}/test_inputs.npy'
+    test_targets = f'../data/{controller}/test_targets.npy'
     test_inputs = torch.tensor(np.load(test_inputs), dtype=torch.float32)
     test_targets = torch.tensor(np.load(test_targets), dtype=torch.float32)
 
