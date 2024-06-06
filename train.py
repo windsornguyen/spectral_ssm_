@@ -89,7 +89,7 @@ def plot_losses(losses, title, eval_interval=None, ylabel='Loss'):
     plt.legend()
 
 
-def plot_metrics(train_losses, val_losses, metric_losses, output_dir, controller):
+def plot_metrics(train_losses, val_losses, metric_losses, grad_norms, output_dir, controller, eval_interval):
     plt.style.use('seaborn-v0_8-whitegrid')
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -141,7 +141,8 @@ def main() -> None:
     train_batch_size: int = 5 // world_size # scale batch size for distributed training
     val_batch_size: int = 5 // world_size  # scale batch size for distributed training
     num_epochs: int = 3
-    eval_period: int = 100
+    # eval_period: int = 100
+    eval_period: int = 1
     learning_rate: float = 7.5e-4
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
@@ -149,11 +150,11 @@ def main() -> None:
     patience: int = 5
     checkpoint_dir: str = 'physics_checkpoints'
     
-    controller = 'HalfCheetah-v1'
-    train_inputs = f'transformer/data/{controller}/3000/train_inputs.npy'
-    train_targets = f'transformer/data/{controller}/3000/train_targets.npy'
-    val_inputs = f'transformer/data/{controller}/3000/val_inputs.npy'
-    val_targets = f'transformer/data/{controller}/3000/val_targets.npy'
+    controller = 'Ant-v1'
+    train_inputs = f'data/{controller}/train_inputs.npy'
+    train_targets = f'data/{controller}/train_targets.npy'
+    val_inputs = f'data/{controller}/val_inputs.npy'
+    val_targets = f'data/{controller}/val_targets.npy'
 
     # Get dataloaders
     train_loader = physics_data.get_dataloader(train_inputs, train_targets, train_batch_size, device=device)
@@ -166,8 +167,8 @@ def main() -> None:
 
     # Define the model
     spectral_ssm = model.Architecture(
-        d_model=24,
-        d_target=18,
+        d_model=37,
+        d_target=29,
         num_layers=6,
         dropout=0.25,
         input_len=1000,
@@ -235,7 +236,7 @@ def main() -> None:
     }
 
     pbar = tqdm(range(num_epochs * len(train_loader)), desc='Training', unit='step') if main_process else range(num_epochs * len(train_loader))
-    for epoch in range(num_epochs):
+    for epoch in range(1):
         for global_step, (inputs, targets) in enumerate(train_loader):
             train_metrics = exp.step(inputs, targets)
 
@@ -270,7 +271,7 @@ def main() -> None:
 
                 val_metrics = exp.evaluate(val_loader)
                 val_losses.append(val_metrics['loss'])
-        
+
                 if world_size > 1:
                     # Gather evaluation metrics from all processes
                     gathered_metrics = [None] * world_size
@@ -324,6 +325,9 @@ def main() -> None:
                         )
                         break
 
+            if global_step > 3:
+                break
+
     # Load the best model checkpoint
     best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)
     spectral_ssm.load_state_dict(torch.load(best_checkpoint_path))
@@ -350,7 +354,7 @@ def main() -> None:
         )
 
     # After training, plot the losses
-    plot_metrics(train_losses, val_losses, metric_losses, 'plots/', controller)
+    plot_metrics(train_losses, val_losses, metric_losses, grad_norms, 'plots/', controller, eval_period)
 
 
 if __name__ == '__main__':

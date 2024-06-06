@@ -270,34 +270,34 @@ class Transformer(nn.Module):
             'angular_velocity_loss': torch.tensor(0.0, device=device)
         }
 
+        ar_sequence[:, 0, :] = inputs[:, init, :]
+        u_start = targets.shape[2]+1
+        u_end = inputs.shape[2]+1
+
         # Iterate over the specified number of time steps
-        for i in range(init, init + steps):
-            if i < seq_len:
-                x_t = inputs[:, i:i + 1, :]
-                targets_t = targets[:, i:i + 1, :]
+        for i in range(steps):
 
-                next_state, (step_loss, step_metrics) = self.forward(x_t, targets=targets_t)
+            x_t = ar_sequence[:, :i + 1, :]
+            targets_t = targets[:, i:i + 1, :]
 
-                predicted_sequence[:, i - init, :] = next_state.squeeze(dim=1)
+            next_state, (step_loss, step_metrics) = self.forward(x_t, targets=targets_t)
+            predicted_sequence[:, i, :] = next_state.squeeze(dim=1)
 
-                total_loss += step_loss
-                for key in metrics:
-                    metrics[key] += step_metrics[key]
+            if i % ar_steps != 0:
+                # x_(t+1) = predicted_sequence[:, i, :] -- shape(1, 1, 29)
+                # u_(t+1) = inputs[:, i + 1 + init, 30:38] -- shape(1, 1, 8)
+                ar_sequence[:, i + 1, :] = predicted_sequence[:, i, :]
+                ar_sequence[:, i + 1, :].append(inputs[:, i + 1 + init, u_start:u_end])
+            else:
+                ar_sequence[:, i + 1, :] = inputs[:, i + 1 + init, :]
 
-                if i + 1 < seq_len and i - init + 1 < steps:
-                    if (i + 1 - init) % ar_steps == 0:
-                        # Use the predicted state from ar_steps steps ago as input
-                        ar_sequence[:, i - init + 1, :] = predicted_sequence[:, max(0, i - init - ar_steps + 1), :]
-                    else:
-                        ar_sequence[:, i - init + 1, :] = x_t.squeeze(dim=1)
-            elif i - init < steps:
-                # If we've reached the end of the input sequence but still have steps to predict,
-                # use the last predicted state as input
-                x_t = ar_sequence[:, i - init - 1:i - init, :]
-                next_state, _ = self.forward(x_t)
-                predicted_sequence[:, i - init, :] = next_state.squeeze(dim=1)
-            if i - init + 1 < steps:
-                ar_sequence[:, i - init + 1, :] = next_state.squeeze(dim=1)
+            total_loss += step_loss
+            for key in metrics:
+                print(key)
+                metrics[key] += step_metrics[key]
+
+        # TODO: # If we've reached the end of the input sequence but still have steps to predict, 
+        # use the last predicted state as input
 
         total_loss /= steps
         for key in metrics:

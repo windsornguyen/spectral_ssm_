@@ -30,6 +30,7 @@ class PhysicsDataset(Dataset):
 
         return x_t, x_t_plus_1
 
+
 def get_dataloader(inputs, targets, batch_size, shuffle=False, device=None, num_workers=1):
     """Create a DataLoader for the given dataset."""
     dataset = PhysicsDataset(inputs, targets)
