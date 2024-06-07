@@ -63,8 +63,8 @@ def main():
         inputs=input_trajectories, 
         targets=target_trajectories,
         init=0, 
-        steps=500, 
-        ar_steps=10
+        steps=100, 
+        ar_steps=1
     )
 
     # Extract the trajectory losses from the loss tuple

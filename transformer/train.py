@@ -79,10 +79,10 @@ def main():
 
     # Data loading
     controller = 'Ant-v1' # If not Ant-v1, add /3000/ after {controller} and change the loss function
-    train_inputs = f'../data/{controller}/train_inputs.npy'
-    train_targets = f'../data/{controller}/train_targets.npy'
-    val_inputs = f'../data/{controller}/val_inputs.npy'
-    val_targets = f'../data/{controller}/val_targets.npy'
+    train_inputs = f'../data/{controller}/yagiz_train_inputs.npy'
+    train_targets = f'../data/{controller}/yagiz_train_targets.npy'
+    val_inputs = f'../data/{controller}/yagiz_val_inputs.npy'
+    val_targets = f'../data/{controller}/yagiz_val_targets.npy'
     print(f'Training on {controller} task.')
 
     # Get dataloaders
