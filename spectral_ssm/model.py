@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 from spectral_ssm import stu_utils
 import time
+from torch.profiler import profile, record_function, ProfilerActivity
+
 
 
 class STU(nn.Module):
@@ -80,7 +82,7 @@ class STU(nn.Module):
         # start_time = time.time()  # Reset timing
 
         y_t = stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u)
-        # print(f"Time for y_t computation: {time.time() - start_time:.4f}s")
+        # # print(f"Time for y_t computation: {time.time() - start_time:.4f}s")
 
         return y_t
 

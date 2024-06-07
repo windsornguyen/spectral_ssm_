@@ -261,7 +261,7 @@ class Transformer(nn.Module):
                     - trajectory_losses (torch.Tensor): A tensor of losses for each trajectory at each time step,
                         with shape [num_trajectories, steps].
         """
-        device = inputs.device
+        device = next(self.parameters()).device
         print(f'Predicting on {device}.') # TODO: Currently using 0% (!!) GPU utilization lol
         num_trajectories, seq_len, d_in = inputs.size()
 
@@ -309,13 +309,12 @@ class Transformer(nn.Module):
                 metrics[key][:, i] = step_metrics[key]
                 # print(f"Shape of {key} at step {i}: {metrics[key][:, i].shape}")
 
-                                
+
         # TODO: # If we've reached the end of the input sequence but still have steps to predict, 
         # use the last predicted state as input (we need to hallucinate and autoregressively predict)
 
         # Calculate average losses and metrics across trajectories
         avg_loss = trajectory_losses.mean()
-        avg_metrics = {key: metric.mean() for key, metric in metrics.items()}
 
-        loss = (avg_loss, avg_metrics, trajectory_losses) # TODO: pass sequences of individual losses as well
+        loss = (avg_loss, metrics, trajectory_losses) # TODO: pass sequences of individual losses as well
         return preds, loss

@@ -1,7 +1,8 @@
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import Tuple, Dict
+from torch.utils.data.distributed import DistributedSampler
+
 
 class PhysicsDataset(Dataset):
     """Custom Dataset for loading sequence data."""
@@ -31,15 +32,34 @@ class PhysicsDataset(Dataset):
         return x_t, x_t_plus_1
 
 
-def get_dataloader(inputs, targets, batch_size, shuffle=False, device=None, num_workers=1):
+def get_dataloader(
+    inputs, 
+    targets, 
+    batch_size,
+    device,
+    shuffle=False, 
+    distributed=True, 
+    rank=0, 
+    num_replicas=1, 
+    num_workers=1, 
+    pin_memory=True
+) -> DataLoader:
     """Create a DataLoader for the given dataset."""
     dataset = PhysicsDataset(inputs, targets)
+
+    sampler = DistributedSampler(
+        dataset=dataset,
+        num_replicas=num_replicas,
+        rank=rank
+    ) if distributed else None
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        sampler=sampler,
         num_workers=num_workers,
-        pin_memory=True  # Useful if using CUDA, as it can speed up data transfer.
+        pin_memory=pin_memory,
+        shuffle=(sampler is None),
     )
 
 # # Example usage

@@ -40,16 +40,16 @@ def main():
         'dropout': 0.0,
         'loss_fn': loss_fn
     }
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     config = TransformerConfig(**model_args)
-    model = Transformer(config)
+    model = Transformer(config).to(device)
     model.load_state_dict(torch.load(model_path))
-    model.eval()
 
     # Load the test data
     test_inputs = f'../data/{controller}/test_inputs.npy'
     test_targets = f'../data/{controller}/test_targets.npy'
-    test_inputs = torch.tensor(np.load(test_inputs), dtype=torch.float32)
-    test_targets = torch.tensor(np.load(test_targets), dtype=torch.float32)
+    test_inputs = torch.tensor(np.load(test_inputs), dtype=torch.float32).to(device)
+    test_targets = torch.tensor(np.load(test_targets), dtype=torch.float32).to(device)
 
     # Select a specific slice of trajectories
     seq_idx = 0
@@ -59,6 +59,7 @@ def main():
     target_trajectories = test_targets[seq_idx:seq_idx+num_trajectories]
 
     # Predict the next states using the model
+    model.eval()
     predicted_states, loss = model.predict(
         inputs=input_trajectories, 
         targets=target_trajectories,
@@ -66,9 +67,11 @@ def main():
         steps=100, 
         ar_steps=1
     )
+    model.train()
 
     # Extract the trajectory losses from the loss tuple
-    avg_loss, avg_metrics, trajectory_losses = loss
+    avg_loss, metrics, trajectory_losses = loss
+    avg_metrics = {key: metric.mean() for key, metric in metrics.items()}
 
     print(f"Average Loss: {avg_loss.item():.4f}")
     print(f"Shape of predicted states: {predicted_states.shape}")
@@ -82,7 +85,7 @@ def main():
     # Generate random colors
     colors = [f"#{random.randint(0, 0xFFFFFF):06x}" for _ in range(num_trajectories)]
 
-    # Plot the predicted states, ground truth states, and trajectory losses
+    # Plot the predicted states, ground truth states, trajectory losses, and other individual losses
     for traj_idx in range(num_trajectories):
         row_idx = traj_idx // 2
         col_idx = (traj_idx % 2) * 2
@@ -90,19 +93,20 @@ def main():
         print(f"Plotting trajectory {traj_idx+1} over {time_steps} time steps")
         
         # Plot the predicted states and ground truth states
-        axs[row_idx, col_idx].plot(range(time_steps), target_trajectories[traj_idx, :time_steps, 0].detach().cpu().numpy(), linestyle='--', color=colors[traj_idx], label=f'Ground Truth {traj_idx+1}')
-        axs[row_idx, col_idx].plot(range(time_steps), predicted_states[traj_idx, :, 0].detach().cpu().numpy(), color=colors[traj_idx], label=f'Predicted {traj_idx+1}')
-        axs[row_idx, col_idx].set_xlabel('Time Step')
-        axs[row_idx, col_idx].set_ylabel('State')
+        plot_losses(target_trajectories[traj_idx, :time_steps, 0].detach().cpu().numpy(), f'Ground Truth {traj_idx+1}', x_values=range(time_steps), ylabel='State')
+        plot_losses(predicted_states[traj_idx, :, 0].detach().cpu().numpy(), f'Predicted {traj_idx+1}', x_values=range(time_steps), ylabel='State')
         axs[row_idx, col_idx].set_title(f'Trajectory {traj_idx+1}: Predicted vs Ground Truth')
         axs[row_idx, col_idx].legend()
         
         # Plot the trajectory losses
-        axs[row_idx, col_idx + 1].plot(range(time_steps), trajectory_losses[traj_idx].detach().cpu().numpy(), color=colors[traj_idx], label=f'Trajectory {traj_idx+1}')
-        axs[row_idx, col_idx + 1].set_xlabel('Time Step')
-        axs[row_idx, col_idx + 1].set_ylabel('Loss')
+        plot_losses(trajectory_losses[traj_idx].detach().cpu().numpy(), f'Trajectory {traj_idx+1}', x_values=range(time_steps), ylabel='Loss')
         axs[row_idx, col_idx + 1].set_title(f'Trajectory {traj_idx+1}: Loss')
         axs[row_idx, col_idx + 1].legend()
+
+    # Plot the other individual losses
+    for key, values in metrics.items():
+        for traj_idx in range(num_trajectories):
+            plot_losses(values[traj_idx].detach().cpu().numpy(), f'{key} Trajectory {traj_idx+1}', x_values=range(time_steps), ylabel=key)
 
     # Remove any unused subplots
     for row_idx in range(num_rows):

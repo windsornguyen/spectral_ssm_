@@ -1,29 +1,29 @@
 # =============================================================================#
-# Authors: Isabel Liu, Yagiz Devre
+# Authors: Isabel Liu, Yagiz Devre, Windsor Nguyen
 # File: train.py
 # =============================================================================#
 
 """Training loop for physics sequence prediction."""
 
 import argparse
-import numpy as np
 import os
 import random
+from datetime import datetime
+from socket import gethostname
+from typing import Tuple, Dict
+
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.distributed as dist
-from typing import Tuple, Dict
-from datetime import datetime
-from spectral_ssm import physics_data
-from spectral_ssm import experiment
-from spectral_ssm import model
-from spectral_ssm import optimizer
+from scipy.ndimage import gaussian_filter1d
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
+
+from spectral_ssm import experiment, model, optimizer, physics_data
 from spectral_ssm.loss_ant import AntLoss
 from spectral_ssm.loss_cheetah import HalfCheetahLoss
 from spectral_ssm.loss_walker import Walker2DLoss
-import matplotlib.pyplot as plt
-from scipy.ndimage import gaussian_filter1d
 
 
 def set_seed(seed: int) -> None:
@@ -71,7 +71,7 @@ def setup(rank: int, world_size: int, gpus_per_node: int) -> tuple[torch.device,
         elif torch.backends.mps.is_available():
             device = torch.device('mps')
 
-    return 'cpu', local_rank, world_size
+    return device, local_rank, world_size
 
 
 def smooth_curve(points, sigma=2):
@@ -138,18 +138,24 @@ def main() -> None:
         )
 
     # Hyperparameters
-    train_batch_size: int = 5 // world_size # scale batch size for distributed training
-    val_batch_size: int = 5 // world_size  # scale batch size for distributed training
+    train_batch_size: int = 16 // world_size # scale batch size for distributed training
+    val_batch_size: int = 16 // world_size  # scale batch size for distributed training
     num_epochs: int = 3
-    eval_period: int = 100
+    eval_period: int = 30
     learning_rate: float = 7.5e-4
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
     m_y_weight_decay: float = 0
+    dropout: float = 0.25
     patience: int = 5
     checkpoint_dir: str = 'physics_checkpoints'
-    if not os.path.exists(checkpoint_dir):
-        os.makedirs(checkpoint_dir, exist_ok=True)
+    best_checkpoint = ""
+
+    if main_process:
+        if not os.path.exists(checkpoint_dir):
+            os.makedirs(checkpoint_dir, exist_ok=True)
+        if not os.path.exists('plots/'):
+            os.makedirs('plots/')
 
     controller = 'Ant-v1'
     train_inputs = f'data/{controller}/yagiz_train_inputs.npy'
@@ -158,8 +164,26 @@ def main() -> None:
     val_targets = f'data/{controller}/yagiz_val_targets.npy'
 
     # Get dataloaders
-    train_loader = physics_data.get_dataloader(train_inputs, train_targets, train_batch_size, device=device)
-    val_loader = physics_data.get_dataloader(val_inputs, val_targets, val_batch_size, device=device)
+    train_loader = physics_data.get_dataloader(
+        inputs=train_inputs,
+        targets=train_targets,
+        batch_size=train_batch_size,
+        device=device,
+        distributed=world_size > 1,
+        rank=rank,
+        num_replicas=world_size,
+        num_workers=num_workers,
+    )
+    val_loader = physics_data.get_dataloader(
+        inputs=val_inputs,
+        targets=val_targets,
+        batch_size=val_batch_size,
+        device=device,
+        distributed=world_size > 1,
+        rank=rank,
+        num_replicas=world_size,
+        num_workers=num_workers,
+    )
     num_steps: int = len(train_loader) * num_epochs
     warmup_steps: int = num_steps // 10
 
@@ -179,7 +203,6 @@ def main() -> None:
     print(sum(p.numel() for p in spectral_ssm.parameters()) / 1e6, 'M parameters')
 
     # Wrap the model with DistributedDataParallel for distributed training
-    # TODO: Distributed code is not ready yet
     if world_size > 1:
         spectral_ssm = DDP(
             spectral_ssm,
@@ -200,7 +223,7 @@ def main() -> None:
 
     loss_fn = HalfCheetahLoss() if controller == 'HalfCheetah-v1' else Walker2DLoss() if controller == 'Walker2D-v1' else AntLoss()
     exp = experiment.Experiment(model=spectral_ssm, loss_fn=loss_fn, optimizer=opt, device=device)
-    msg = "Lyla: We'll be training with"
+    msg = f"Lyla: We'll be training on the {controller} task with"
 
     if main_process:
         if world_size > 1:
@@ -251,11 +274,13 @@ def main() -> None:
                 lrs = f"{default_lr:.2e}, m_y_lr={m_y_lr:.2e}"
                 postfix_dict = {
                     'tr_loss': train_metrics["loss"],
+                    'val_loss': val_losses[-1] if len(val_losses) > 0 else None,
+                    'grd_nrm': train_metrics['grad_norm'],
                     'lr': lrs
                 }
                 for metric in train_metrics:
                     if metric in metric_losses:
-                        postfix_dict[metric] = train_metrics[metric]  # Remove the item() call here
+                        postfix_dict[metric] = train_metrics[metric]
                 pbar.set_postfix(postfix_dict)
                 pbar.update(1)
 
@@ -299,7 +324,7 @@ def main() -> None:
                         best_model_metrics = val_metrics
                         eval_periods_without_improvement = 0
                         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-                        checkpoint_filename = f'checkpoint-step{global_step}-{timestamp}.pt'
+                        checkpoint_filename = f'{controller}-checkpoint-step{global_step}-{timestamp}.pt'
                         checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
                         best_checkpoint = checkpoint_filename
                         
@@ -325,22 +350,25 @@ def main() -> None:
                         break
     pbar.close()
 
-    # Load the best model checkpoint
     best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)
     spectral_ssm.load_state_dict(torch.load(best_checkpoint_path))
 
-    # Print detailed information about the best model
     if main_process:
-        print("\nLyla: Training completed! Nice work. Here's the best model information:")
-        print(f'    Best model at step {best_model_step}')
-        print(f'    Best model validation loss: {best_val_loss:.4f}')
-        print(f'    Best model checkpoint saved at: {best_checkpoint_path}')
+        if best_checkpoint:
+            best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)
+            spectral_ssm.load_state_dict(torch.load(best_checkpoint_path))
+            print("\nLyla: Training completed! Nice work. Here's the best model information:")
+            print(f'    Best model at step {best_model_step}')
+            print(f'    Best model validation loss: {best_val_loss:.4f}')
+            print(f'    Best model checkpoint saved at: {best_checkpoint_path}')
+        else:
+            print("\nLyla: Training completed! No best model found.")
 
         # Save the training details to a file
         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
         training_details = f'training_details_{timestamp}.txt'
         with open(training_details, 'w') as f:
-            f.write(f'Training completed at: {datetime.now()}\n')
+            f.write(f'Training completed for {controller} at: {datetime.now()}\n')
             f.write(f'Best model step: {best_model_step}\n')
             f.write(f'Best model validation loss: {best_val_loss:.4f}\n')
             f.write(f'Best model checkpoint saved at: {best_checkpoint_path}\n')
@@ -350,9 +378,11 @@ def main() -> None:
             ' It was a pleasure assisting you. Until next time!'
         )
 
-    # After training, plot the losses
-    plot_metrics(train_losses, val_losses, metric_losses, grad_norms, 'plots/', controller, eval_period)
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
+    if main_process:
+        plot_metrics(train_losses, val_losses, metric_losses, grad_norms, 'plots/', controller, eval_period)
 
 if __name__ == '__main__':
     main()

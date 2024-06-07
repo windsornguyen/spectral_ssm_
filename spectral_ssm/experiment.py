@@ -65,7 +65,7 @@ class Experiment:
                 total_norm += param_norm ** 2
                 # print(f'{name}: {param_norm:.4f}')
         total_norm = total_norm ** 0.5
-        print(f'Total grad norm: {total_norm:.4f}')
+        metrics['grad_norm'] = total_norm
 
         self.optimizer.step()
 
