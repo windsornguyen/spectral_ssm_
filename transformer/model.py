@@ -288,7 +288,9 @@ class Transformer(nn.Module):
             # print(f"Shape of ys at step {i}: {ys.shape}")
             
             preds_step, (step_loss, step_metrics) = self.forward(xs, ys)
-            # print(f"Shape of preds_step at step {i}: {preds_step.shape}")
+            print(f"Shape of preds_step at step {i}: {preds_step.shape}")
+            print(f"Shape of step_loss at step {i}: {step_loss.shape}")
+            print(f"Shape of step_metrics at step {i}: {step_metrics}")
 
             preds[:, i, :] = preds_step[:, i, :]
             # print(f"Shape of updated preds at step {i}: {preds[:, i, :].shape}")
@@ -316,5 +318,5 @@ class Transformer(nn.Module):
         # Calculate average losses and metrics across trajectories
         avg_loss = trajectory_losses.mean()
 
-        loss = (avg_loss, metrics, trajectory_losses) # TODO: pass sequences of individual losses as well
+        loss = (avg_loss, metrics, trajectory_losses)
         return preds, loss

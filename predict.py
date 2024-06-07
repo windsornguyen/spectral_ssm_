@@ -1,11 +1,24 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-from spectral_ssm import model
+from scipy.ndimage import gaussian_filter1d
+from spectral_ssm.model import STU
+
+def smooth_curve(points, sigma=2):
+    return gaussian_filter1d(points, sigma=sigma)
+
+def plot_losses(losses, title, x_values=None, ylabel='Loss', color=None):
+    if x_values is None:
+        x_values = list(range(len(losses)))
+    plt.plot(x_values, smooth_curve(losses), label=title, color=color)
+    plt.xlabel('Time Step')
+    plt.ylabel(ylabel)
+    plt.legend()
 
 def main():
     # Load the trained model
-    model_path = 'checkpoints/best_model.pt'
+    controller = 'Ant-v1'
+    model_path = f'physics_checkpoints_ant/Ant-v1-checkpoint-step180-20240607125206.pt'
     model_args = {
         'd_out': 37,
         'input_len': 1000,
@@ -14,81 +27,78 @@ def main():
         'auto_reg_k_y': 2,
         'learnable_m_y': True,
     }
-    m = model.STU(**model_args)
-    m.load_state_dict(torch.load(model_path))
-    m.eval()
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+    model = STU(**model_args).to(device)
+    # model.load_state_dict(torch.load(model_path))
+    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
+    model.eval()
 
     # Load the test data
-    test_inputs = 'data/Ant-v1/test_inputs.npy'
-    test_targets = 'data/Ant-v1/test_targets.npy'
-    test_inputs = torch.tensor(np.load(test_inputs), dtype=torch.float32)
-    test_targets = torch.tensor(np.load(test_targets), dtype=torch.float32)
-    # Print dims of inputs and targets
-    print(test_inputs.shape, test_targets.shape)
+    test_inputs = f'../data/{controller}/test_inputs.npy'
+    test_targets = f'../data/{controller}/test_targets.npy'
+    test_inputs = torch.tensor(np.load(test_inputs), dtype=torch.float32).to(device)
+    test_targets = torch.tensor(np.load(test_targets), dtype=torch.float32).to(device)
 
     # Select a specific slice of trajectories
     seq_idx = 0
-    input_trajectories = test_inputs[seq_idx:seq_idx+5]  # Select 5 input trajectories starting from seq_idx
-    target_trajectories = test_targets[seq_idx:seq_idx+5]  # Select 5 target trajectories starting from seq_idx
-    # Print dims of inputs and targets
-    print(input_trajectories.shape, target_trajectories.shape)
+    num_trajectories = 5
+    # TODO: Should really randomize the trajectories and give them as slices?
+    input_trajectories = test_inputs[seq_idx:seq_idx+num_trajectories]
+    target_trajectories = test_targets[seq_idx:seq_idx+num_trajectories]
 
-    # Predict the next states using the model
-    init_idx = 0
-    t = 100  # Number of time steps to predict
-    predicted_states, losses = m.predict(test_inputs, test_targets, init=init_idx, t=t)
+    model.eval()
+    predicted_states, loss = model.predict(
+        inputs=input_trajectories,
+        targets=target_trajectories,
+        init=0,
+        steps=10,
+        ar_steps=1
+    )
+    model.train()
 
-    # Extract the individual losses from the loss tuple
-    total_loss, metrics = losses
-    losses = metrics['loss']
-    coordinate_loss = metrics['coordinate_loss']
-    orientation_loss = metrics['orientation_loss']
-    angle_loss = metrics['angle_loss']
-    coordinate_velocity_loss = metrics['coordinate_velocity_loss']
-    angular_velocity_loss = metrics['angular_velocity_loss']
+    # Extract the trajectory losses from the loss tuple
+    avg_loss, metrics, trajectory_losses = loss
 
-    # Plot the predicted states and ground truth states
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(range(init_idx, init_idx + t), target_trajectories[0, init_idx:init_idx + t, 0], label='Ground Truth')
-    ax.plot(range(init_idx, init_idx + t), [state[0] for state in predicted_states], label='Predicted')
-    ax.set_xlabel('Time Step')
-    ax.set_ylabel('State')
-    ax.set_title('Predicted vs Ground Truth States')
-    ax.legend()
+    print(f"Average Loss: {avg_loss.item():.4f}")
+    print(f"Shape of predicted states: {predicted_states.shape}")
 
-    # Print the averaged total loss and plot losses over different time steps
-    losses = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in losses]
-    print("Averaged Total Loss:", total_loss)
-    fig2, axz = plt.subplots(figsize=(10, 6))
-    axz.plot(range(init_idx, init_idx + t), losses)
-    axz.set_title('Total Loss')
+    # Set up plotting style
+    plt.style.use('seaborn-v0_8-whitegrid')
+    num_rows = num_trajectories
+    num_cols = 2
+    fig, axs = plt.subplots(num_rows, num_cols, figsize=(8 * num_cols, 4 * num_rows))
 
-    # Plot the individual losses
-    coordinate_loss = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in coordinate_loss]
-    orientation_loss = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in orientation_loss]
-    angle_loss = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in angle_loss]
-    coordinate_velocity_loss = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in coordinate_velocity_loss]
-    angular_velocity_loss = [x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else x for x in angular_velocity_loss]
+    # Generate random colors
+    colors = [f"#{random.randint(0, 0xFFFFFF):06x}" for _ in range(num_trajectories)]
 
-    fig3, axs = plt.subplots(2, 3, figsize=(15, 8))
-    axs[0, 0].plot(range(init_idx, init_idx + t), coordinate_loss)
-    axs[0, 0].set_title('Coordinate Loss')
-    axs[0, 1].plot(range(init_idx, init_idx + t), orientation_loss)
-    axs[0, 1].set_title('Orientation Loss')
-    axs[0, 2].plot(range(init_idx, init_idx + t), angle_loss)
-    axs[0, 2].set_title('Angle Loss')
-    axs[1, 0].plot(range(init_idx, init_idx + t), coordinate_velocity_loss)
-    axs[1, 0].set_title('Coordinate Velocity Loss')
-    axs[1, 1].plot(range(init_idx, init_idx + t), angular_velocity_loss)
-    axs[1, 1].set_title('Angular Velocity Loss')
-    axs[1, 2].axis('off')  # Leave the last subplot empty
+    # Plot the predicted states, ground truth states, and trajectory losses
+    for traj_idx in range(num_trajectories):
+        time_steps = predicted_states.shape[1]
+        print(f"Plotting trajectory {traj_idx+1} over {time_steps} time steps")
 
-    for ax in axs.flat:
-        ax.set(xlabel='Time Step', ylabel='Loss')
+        # Plot the predicted states and ground truth states
+        axs[traj_idx, 0].clear()
+        axs[traj_idx, 0].plot(range(time_steps), target_trajectories[traj_idx, :time_steps, 5].detach().cpu().numpy(), label=f'Ground Truth {traj_idx+1}', color=colors[traj_idx], linewidth=2, linestyle='--')
+        axs[traj_idx, 0].plot(range(time_steps), predicted_states[traj_idx, :, 5].detach().cpu().numpy(), label=f'Predicted {traj_idx+1}', color=colors[traj_idx], linewidth=2)
+        axs[traj_idx, 0].set_title(f'Trajectory {traj_idx+1}: Predicted vs Ground Truth')
+        axs[traj_idx, 0].set_xlabel('Time Step')
+        axs[traj_idx, 0].set_ylabel('State')
+        axs[traj_idx, 0].legend()
+        axs[traj_idx, 0].grid(True)
 
-    fig3.tight_layout()
+        # Plot the trajectory losses
+        axs[traj_idx, 1].clear()
+        axs[traj_idx, 1].plot(range(time_steps), smooth_curve(trajectory_losses[traj_idx].detach().cpu().numpy()), color=colors[traj_idx], linewidth=2)
+        axs[traj_idx, 1].set_title(f'Trajectory {traj_idx+1}: Loss')
+        axs[traj_idx, 1].set_xlabel('Time Step')
+        axs[traj_idx, 1].set_ylabel('Loss')
+        axs[traj_idx, 1].grid(True)
 
+    plt.tight_layout()
+    plt.savefig(f'results/{controller}_predictions.png', dpi=300, bbox_inches='tight')
     plt.show()
+
 
 if __name__ == '__main__':
     main()
