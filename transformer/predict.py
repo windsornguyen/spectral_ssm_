@@ -11,10 +11,10 @@ from loss_walker import Walker2DLoss
 def smooth_curve(points, sigma=2):
     return gaussian_filter1d(points, sigma=sigma)
 
-def plot_losses(losses, title, x_values=None, ylabel='Loss'):
+def plot_losses(losses, title, x_values=None, ylabel='Loss', color=None):
     if x_values is None:
         x_values = list(range(len(losses)))
-    plt.plot(x_values, smooth_curve(losses), label=title)
+    plt.plot(x_values, smooth_curve(losses), label=title, color=color)
     plt.xlabel('Time Step')
     plt.ylabel(ylabel)
     plt.legend()
@@ -43,7 +43,8 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
     config = TransformerConfig(**model_args)
     model = Transformer(config).to(device)
-    model.load_state_dict(torch.load(model_path))
+    # model.load_state_dict(torch.load(model_path))
+    model.load_state_dict(torch.load(model_path, map_location=torch.device('cpu')))
 
     # Load the test data
     test_inputs = f'../data/{controller}/test_inputs.npy'
@@ -58,65 +59,58 @@ def main():
     input_trajectories = test_inputs[seq_idx:seq_idx+num_trajectories]
     target_trajectories = test_targets[seq_idx:seq_idx+num_trajectories]
 
-    # Predict the next states using the model
     model.eval()
     predicted_states, loss = model.predict(
-        inputs=input_trajectories, 
+        inputs=input_trajectories,
         targets=target_trajectories,
-        init=0, 
-        steps=100, 
+        init=0,
+        steps=10,
         ar_steps=1
     )
     model.train()
 
     # Extract the trajectory losses from the loss tuple
     avg_loss, metrics, trajectory_losses = loss
-    avg_metrics = {key: metric.mean() for key, metric in metrics.items()}
 
     print(f"Average Loss: {avg_loss.item():.4f}")
     print(f"Shape of predicted states: {predicted_states.shape}")
 
     # Set up plotting style
     plt.style.use('seaborn-v0_8-whitegrid')
-    num_rows = (num_trajectories + 1) // 2
-    num_cols = 4
-    fig, axs = plt.subplots(num_rows, num_cols, figsize=(16, 3 * num_rows))
+    num_rows = num_trajectories
+    num_cols = 2
+    fig, axs = plt.subplots(num_rows, num_cols, figsize=(8 * num_cols, 4 * num_rows))
 
     # Generate random colors
     colors = [f"#{random.randint(0, 0xFFFFFF):06x}" for _ in range(num_trajectories)]
 
-    # Plot the predicted states, ground truth states, trajectory losses, and other individual losses
+    # Plot the predicted states, ground truth states, and trajectory losses
     for traj_idx in range(num_trajectories):
-        row_idx = traj_idx // 2
-        col_idx = (traj_idx % 2) * 2
         time_steps = predicted_states.shape[1]
         print(f"Plotting trajectory {traj_idx+1} over {time_steps} time steps")
-        
+
         # Plot the predicted states and ground truth states
-        plot_losses(target_trajectories[traj_idx, :time_steps, 0].detach().cpu().numpy(), f'Ground Truth {traj_idx+1}', x_values=range(time_steps), ylabel='State')
-        plot_losses(predicted_states[traj_idx, :, 0].detach().cpu().numpy(), f'Predicted {traj_idx+1}', x_values=range(time_steps), ylabel='State')
-        axs[row_idx, col_idx].set_title(f'Trajectory {traj_idx+1}: Predicted vs Ground Truth')
-        axs[row_idx, col_idx].legend()
-        
+        axs[traj_idx, 0].clear()
+        axs[traj_idx, 0].plot(range(time_steps), target_trajectories[traj_idx, :time_steps, 5].detach().cpu().numpy(), label=f'Ground Truth {traj_idx+1}', color=colors[traj_idx], linewidth=2, linestyle='--')
+        axs[traj_idx, 0].plot(range(time_steps), predicted_states[traj_idx, :, 5].detach().cpu().numpy(), label=f'Predicted {traj_idx+1}', color=colors[traj_idx], linewidth=2)
+        axs[traj_idx, 0].set_title(f'Trajectory {traj_idx+1}: Predicted vs Ground Truth')
+        axs[traj_idx, 0].set_xlabel('Time Step')
+        axs[traj_idx, 0].set_ylabel('State')
+        axs[traj_idx, 0].legend()
+        axs[traj_idx, 0].grid(True)
+
         # Plot the trajectory losses
-        plot_losses(trajectory_losses[traj_idx].detach().cpu().numpy(), f'Trajectory {traj_idx+1}', x_values=range(time_steps), ylabel='Loss')
-        axs[row_idx, col_idx + 1].set_title(f'Trajectory {traj_idx+1}: Loss')
-        axs[row_idx, col_idx + 1].legend()
-
-    # Plot the other individual losses
-    for key, values in metrics.items():
-        for traj_idx in range(num_trajectories):
-            plot_losses(values[traj_idx].detach().cpu().numpy(), f'{key} Trajectory {traj_idx+1}', x_values=range(time_steps), ylabel=key)
-
-    # Remove any unused subplots
-    for row_idx in range(num_rows):
-        for col_idx in range(num_cols):
-            if row_idx * 2 + col_idx // 2 >= num_trajectories:
-                fig.delaxes(axs[row_idx, col_idx])
+        axs[traj_idx, 1].clear()
+        axs[traj_idx, 1].plot(range(time_steps), smooth_curve(trajectory_losses[traj_idx].detach().cpu().numpy()), color=colors[traj_idx], linewidth=2)
+        axs[traj_idx, 1].set_title(f'Trajectory {traj_idx+1}: Loss')
+        axs[traj_idx, 1].set_xlabel('Time Step')
+        axs[traj_idx, 1].set_ylabel('Loss')
+        axs[traj_idx, 1].grid(True)
 
     plt.tight_layout()
     plt.savefig(f'results/{controller}_predictions.png', dpi=300, bbox_inches='tight')
     plt.show()
+
 
 if __name__ == '__main__':
     main()
