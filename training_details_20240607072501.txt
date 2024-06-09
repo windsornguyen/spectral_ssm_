@@ -1,4 +1,0 @@
-Training completed at: 2024-06-07 07:25:01.320349
-Best model step: 180
-Best model validation loss: 9.2359
-Best model checkpoint saved at: physics_checkpoints/checkpoint-step180-20240607072445.pt

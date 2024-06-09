@@ -1,5 +1,11 @@
 import os
+import sys
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(script_dir)
+sys.path.append(parent_dir)
+
+import torch.distributed as dist
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -8,11 +14,16 @@ import time
 from scipy.ndimage import gaussian_filter1d
 from tqdm import tqdm
 
-from data import get_dataloader
-from model import Transformer, TransformerConfig
-from loss_ant import AntLoss
-from loss_cheetah import HalfCheetahLoss
-from loss_walker import Walker2DLoss
+from stu.physics.physics_data import get_dataloader
+from transformer.model import Transformer, TransformerConfig
+from losses.loss_ant import AntLoss
+from losses.loss_cheetah import HalfCheetahLoss
+from losses.loss_walker import Walker2DLoss
+
+import torch.distributed as dist
+from scipy.ndimage import gaussian_filter1d
+from torch.nn.parallel import DistributedDataParallel as DDP
+from tqdm import tqdm
 
 
 def smooth_curve(points, sigma=2):
@@ -33,7 +44,7 @@ def plot_losses(losses, title, eval_interval=None, ylabel='Loss'):
 @torch.no_grad()
 def evaluate(model, loader):
     model.eval()
-    device = loader.dataset.device
+    device = next(model.parameters()).device
     losses = []
 
     # torch.cuda.synchronize()
@@ -96,10 +107,10 @@ def main():
         'n_layer': n_layer,
         'n_head': n_head,
         'n_embd': n_embd,
-        'scale': scale,
+        # 'scale': scale,
         'd_out': d_out,
         'max_len': max_len,
-        'bias': bias, 
+        # 'bias': bias, 
         'dropout': dropout,
         'loss_fn': loss_fn
     }

@@ -1,6 +1,6 @@
 # ==============================================================================#
-# Authors: Isabel Liu, Windsor Nguyen
+# Authors: Windsor Nguyen
 # File: __init__.py
 # ==============================================================================#
 
-"""Vanilla Transformer."""
+"""Jamba: A Transformer + Mamba Hybrid."""
