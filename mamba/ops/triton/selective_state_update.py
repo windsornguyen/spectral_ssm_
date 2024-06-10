@@ -6,7 +6,7 @@
 # =============================================================================#
 
 
-"""Required: triton==2.1.0 or triton==2.2.0 or triton==2.3.0 for this"""
+"""Required: triton==2.1.0 or triton==2.2.0 or triton==2.3.0"""
 
 import math
 import torch
