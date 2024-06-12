@@ -5,18 +5,10 @@
 
 """Training loop for physics sequence prediction."""
 
-import os
-import sys
-
-# TODO: Fix annoying Python pkg path issues eventually so we can remove this.
-script_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(script_dir)
-sys.path.append(parent_dir)
-
-# TODO: Organize imports acording to PEP8 standards.
 import argparse
-import random
 from datetime import datetime
+import os
+import random
 from socket import gethostname
 
 import matplotlib.pyplot as plt
@@ -26,15 +18,15 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
-from stu import experiment, model, optimizer
-from stu.physics import physics_data
-from stu.model import STUConfigs
-from transformer.model import Transformer, TransformerConfigs
-# from mamba.model import Mamba, MambaConfig
-# from jamba.model import Jamba, JambaConfig
 from losses.loss_ant import AntLoss
 from losses.loss_cheetah import HalfCheetahLoss
 from losses.loss_walker import Walker2DLoss
+from stu import model, experiment as exp, optimizer as opt
+from stu.model import STUConfigs
+from stu.physics import physics_data
+from transformer.model import Transformer, TransformerConfigs
+# from mamba.model import Mamba, MambaConfig
+# from jamba.model import Jamba, JambaConfig
 
 
 def set_seed(seed: int) -> None:
@@ -172,19 +164,14 @@ def get_models(models):
 def main() -> None:
     parser = argparse.ArgumentParser(description='Distributed Training Setup')
     parser.add_argument(
-        '--models', 
-        nargs='+', 
-        default=['stu'], 
-        choices=[
-            'stu', 
-            'transformer', 
-            'mamba', 
-            'jamba'
-        ], 
-        help='Models to train'
+        '--models',
+        nargs='+',
+        default=['stu'],
+        choices=['stu', 'transformer', 'mamba', 'jamba'],
+        help='Models to train',
     )
     args = parser.parse_args()
-    
+
     # Defaults specific to the Princeton HPC cluster; modify to your own setup.
     world_size = int(os.environ.get('WORLD_SIZE', 1))
     rank = int(os.environ.get('SLURM_PROCID', 0))
@@ -215,7 +202,7 @@ def main() -> None:
     weight_decay: float = 1e-1
     m_y_learning_rate: float = 5e-5
     m_y_weight_decay: float = 0
-    
+
     # STU hyperparameters
     d_model: int = 24
     d_target: int = 18
@@ -228,7 +215,6 @@ def main() -> None:
     learnable_m_y: bool = True
     stu_lr: float = 7.5e-4
 
-
     # Transformer hyperparameters
     n_layer: int = 6
     n_head: int = 1
@@ -236,10 +222,9 @@ def main() -> None:
     scale: int = 4
     d_out: int = 29
     max_len: int = 1_000
-    bias: bool = False # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     dropout: float = 0.25
     transformer_lr: float = 7.5e-4
-
 
     # Mamba hyperparameters
     # TBW
@@ -254,10 +239,10 @@ def main() -> None:
             os.makedirs('plots/')
 
     controller = 'HalfCheetah-v1'
-    train_inputs = f'../data/{controller}/3000/train_inputs.npy'
-    train_targets = f'../data/{controller}/3000/train_targets.npy'
-    val_inputs = f'../data/{controller}/3000/val_inputs.npy'
-    val_targets = f'../data/{controller}/3000/val_targets.npy'
+    train_inputs = f'data/{controller}/3000/train_inputs.npy'
+    train_targets = f'data/{controller}/3000/train_targets.npy'
+    val_inputs = f'data/{controller}/3000/val_inputs.npy'
+    val_targets = f'data/{controller}/3000/val_targets.npy'
 
     # Get dataloaders
     train_loader = physics_data.get_dataloader(
@@ -284,7 +269,6 @@ def main() -> None:
     warmup_steps: int = num_steps // 10
 
     models = {}
-    optimizers = {}
     experiments = {}
     loss_fn = (
         HalfCheetahLoss()
@@ -296,21 +280,18 @@ def main() -> None:
 
     # Define the models based on flags
     if 'stu' in args.models:
-        configs = {
-            'd_model': d_model,
-            'd_target': d_target,
-            'num_layers': num_layers,
-            'dropout': dropout,
-            'input_len': input_len,
-            'num_eigh': num_eigh,
-            'auto_reg_k_u': auto_reg_k_u,
-            'auto_reg_k_y': auto_reg_k_y,
-            'learnable_m_y': learnable_m_y,
-            'stu_lr': stu_lr,
-            'loss_fn': loss_fn
-        }
-        
-        stu_configs = STUConfigs(**configs)
+        stu_configs = STUConfigs(
+            d_model=d_model,
+            d_target=d_target,
+            num_layers=num_layers,
+            dropout=dropout,
+            input_len=input_len,
+            num_eigh=num_eigh,
+            auto_reg_k_u=auto_reg_k_u,
+            auto_reg_k_y=auto_reg_k_y,
+            learnable_m_y=learnable_m_y,
+            loss_fn=loss_fn,
+        )
         stu_model = model.Architecture(stu_configs).to(device)
 
         if world_size > 1:
@@ -321,9 +302,10 @@ def main() -> None:
             )
 
         models['stu'] = stu_model.module if world_size > 1 else stu_model
+        models['stu'].train()
 
-        optimizers['stu'] = optimizer.get_optimizer(
-            stu_model,
+        stu_optimizer, stu_scheduler = opt.get_optimizer(
+            models['stu'],
             num_steps=num_steps,
             warmup_steps=warmup_steps,
             learning_rate=stu_lr,
@@ -332,74 +314,119 @@ def main() -> None:
             m_y_weight_decay=m_y_weight_decay,
         )
 
-        experiments['stu'] = experiment(
-            model=stu_model, 
-            loss_fn=loss_fn, 
-            optimizer=optimizers['stu'], 
-            device=device
+        experiments['stu'] = exp.Experiment(
+            model=models['stu'],
+            loss_fn=loss_fn,
+            optimizer=stu_optimizer,
+            scheduler=stu_scheduler,
+            device=device,
         )
 
     if 'transformer' in args.models:
-        configs = {
-            'n_layer': n_layer,
-            'n_head': n_head,
-            'n_embd': n_embd,
-            'scale': scale,
-            'd_out': d_out,
-            'max_len': max_len,
-            'bias': bias,
-            'dropout': dropout,
-            'loss_fn': loss_fn
-        }
-        transformer_configs = TransformerConfigs(**configs)
+        transformer_configs = TransformerConfigs(
+            n_layer=n_layer,
+            n_head=n_head,
+            n_embd=n_embd,
+            scale=scale,
+            d_out=d_out,
+            max_len=max_len,
+            bias=bias,
+            dropout=dropout,
+            loss_fn=loss_fn,
+        )
         transformer_model = Transformer(transformer_configs).to(device)
 
         if world_size > 1:
-            transformer_model = DDP(transformer_model, device_ids=[local_rank], output_device=local_rank)
+            transformer_model = DDP(
+                transformer_model,
+                device_ids=[local_rank],
+                output_device=local_rank,
+            )
 
-        models['transformer'] = transformer_model.module if world_size > 1 else transformer_model
-        
-        # TODO: Write a get_optimizer for Transformer in optimizer.py
-        optimizers['transformer'] = torch.optim.AdamW(transformer_model.parameters(), lr=transformer_lr)
-
-        experiments['transformer'] = experiment(
-            model=transformer_model, 
-            loss_fn=loss_fn, 
-            optimizer=optimizers['transformer'], 
-            device=device
+        models['transformer'] = (
+            transformer_model.module if world_size > 1 else transformer_model
         )
-    
+        models['transformer'].train()
+
+        transformer_optimizer, transformer_scheduler = opt.get_optimizer(
+            models['transformer'],
+            num_steps=num_steps,
+            warmup_steps=warmup_steps,
+            learning_rate=transformer_lr,
+            weight_decay=weight_decay,
+        )
+
+        experiments['transformer'] = exp.Experiment(
+            model=models['transformer'],
+            loss_fn=loss_fn,
+            optimizer=transformer_optimizer,
+            scheduler=transformer_scheduler,
+            device=device,
+        )
+
     # TO BE ADDED!
     # if 'mamba' in args.models:
-    #     mamba_configs = MambaConfig(...)
-    #     mamba_model = Mamba(mamba_configs)
-    #     mamba_model = mamba_model.to(device)
+    #     mamba_configs = MambaConfig(
+    #         # Add Mamba-specific configuration arguments here
+    #         loss_fn=loss_fn
+    #     )
+    #     mamba_model = Mamba(mamba_configs).to(device)
     #     if world_size > 1:
-    #         mamba_model = DDP(mamba_model, device_ids=[local_rank], output_device=local_rank)
+    #         mamba_model = DDP(
+    #             mamba_model,
+    #             device_ids=[local_rank],
+    #             output_device=local_rank
+    #         )
     #     models['mamba'] = mamba_model.module if world_size > 1 else mamba_model
-    #     optimizers['mamba'] = torch.optim.AdamW(mamba_model.parameters(), lr=args.mamba_lr)
-    #     experiments['mamba'] = experiment(
-    #         model=mamba_model, 
-    #         loss_fn=loss_fn, 
-    #         optimizer=optimizers['mamba'], 
+    #     models['mamba'].train()
+    #
+    #     mamba_optimizer, mamba_scheduler = opt.get_optimizer(
+    #         models['mamba'],
+    #         num_steps=num_steps,
+    #         warmup_steps=warmup_steps,
+    #         learning_rate=mamba_lr,
+    #         weight_decay=weight_decay,
+    #     )
+    #
+    #     experiments['mamba'] = exp.Experiment(
+    #         model=models['mamba'],
+    #         loss_fn=loss_fn,
+    #         optimizer=mamba_optimizer,
+    #         scheduler=mamba_scheduler,
     #         device=device
     #     )
-    
+
     # if 'jamba' in args.models:
-    #     jamba_configs = JambaConfig(...)
-    #     jamba_model = Jamba(jamba_configs)
-    #     jamba_model = jamba_model.to(device)
+    #     jamba_configs = JambaConfig(
+    #         # Add Jamba-specific configuration arguments here
+    #         loss_fn=loss_fn
+    #     )
+    #     jamba_model = Jamba(jamba_configs).to(device)
     #     if world_size > 1:
-    #         jamba_model = DDP(jamba_model, device_ids=[local_rank], output_device=local_rank)
+    #         jamba_model = DDP(
+    #             jamba_model,
+    #             device_ids=[local_rank],
+    #             output_device=local_rank
+    #         )
     #     models['jamba'] = jamba_model.module if world_size > 1 else jamba_model
-    #     optimizers['jamba'] = torch.optim.AdamW(jamba_model.parameters(), lr=args.jamba_lr)
-    #     experiments['jamba'] = experiment(
-    #         model=jamba_model, 
-    #         loss_fn=loss_fn, 
-    #         optimizer=optimizers['jamba'], 
+    #     models['jamba'].train()
+    #
+    #     jamba_optimizer, jamba_scheduler = opt.get_optimizer(
+    #         models['jamba'],
+    #         num_steps=num_steps,
+    #         warmup_steps=warmup_steps,
+    #         learning_rate=jamba_lr,
+    #         weight_decay=weight_decay,
+    #     )
+    #
+    #     experiments['jamba'] = exp.Experiment(
+    #         model=models['jamba'],
+    #         loss_fn=loss_fn,
+    #         optimizer=jamba_optimizer,
+    #         scheduler=jamba_scheduler,
     #         device=device
     #     )
-    
+
     best_val_losses = {model_name: float('inf') for model_name in args.models}
     patient_counters = {model_name: 0 for model_name in args.models}
     best_model_step = {model_name: 0 for model_name in args.models}
@@ -426,12 +453,13 @@ def main() -> None:
         msg = f"Lyla: We'll be training the {models} {grmr} on the {controller} task with"
         if world_size > 1:
             print(
-                f'{msg} {device} on rank {rank + 1}/{world_size}, '
-                f'utilizing {world_size} distributed processes.'
+                f'{msg} {device} on rank {rank + 1}/{world_size}'
+                f' utilizing {world_size} distributed processes.'
             )
         else:
             print(f'{msg} {device} today.')
 
+    # Prepare for training
     pbar = (
         tqdm(
             range(num_epochs * len(train_loader)), desc='Training', unit='step'
@@ -439,49 +467,79 @@ def main() -> None:
         if main_process
         else range(num_epochs * len(train_loader))
     )
-
     torch.autograd.set_detect_anomaly(True)
+
+    # Training loop!
     for epoch in range(num_epochs):
         for step, (inputs, targets) in enumerate(train_loader):
-            for model_name, exp in experiments.items():
-                train_metrics = exp.step(inputs, targets)
+            for model_name in args.models:
+                model = models[model_name]
+                experiment = experiments[model_name]
+
+                if model_name == 'transformer':
+                    outputs, loss = model(inputs, targets)
+                    train_metrics = experiment.step(loss)
+                else:
+                    outputs = model(inputs)
+                    train_metrics = experiment.step(outputs, targets)
 
                 # Append the losses and metrics for each model
                 train_losses[model_name].append(train_metrics['loss'])
                 grad_norms[model_name].append(train_metrics['grad_norm'])
                 for metric in metric_losses[model_name]:
                     if metric in train_metrics:
-                        metric_losses[model_name][metric].append(train_metrics[metric])
+                        metric_losses[model_name][metric].append(
+                            train_metrics[metric]
+                        )
 
                 if main_process:
+                    current_lrs = experiment.scheduler.get_last_lr()
+                    default_lr = current_lrs[0]
+                    m_y_lr = current_lrs[1] if len(current_lrs) > 1 else None
+                    lrs = f'{default_lr:.2e}'
+                    if m_y_lr is not None:
+                        lrs += f', m_y_lr={m_y_lr:.2e}'
                     postfix_dict = {
                         f'{model_name}_tr_loss': train_metrics['loss'],
-                        f'{model_name}_val_loss': val_losses[model_name][-1] if len(val_losses[model_name]) > 0 else None,
+                        f'{model_name}_val_loss': val_losses[model_name][-1]
+                        if len(val_losses[model_name]) > 0
+                        else None,
                         f'{model_name}_grd_nrm': train_metrics['grad_norm'],
+                        f'{model_name}_lr': lrs,
                     }
                     for metric in train_metrics:
                         if metric in metric_losses[model_name]:
-                            postfix_dict[f'{model_name}_{metric}'] = train_metrics[metric]
+                            postfix_dict[f'{model_name}_{metric}'] = (
+                                train_metrics[metric]
+                            )
                     pbar.set_postfix(postfix_dict)
 
-            if main_process:
-                pbar.update(1)
+                if main_process:
+                    pbar.update(1)
 
             total_steps = epoch * len(train_loader) + step
 
             if total_steps > 0 and total_steps % eval_period == 0:
-                for model_name, exp in experiments.items():
-                    val_metrics = exp.evaluate(val_loader)
+                for model_name, experiment in experiments.items():
+                    val_metrics = experiment.evaluate(val_loader)
                     val_losses[model_name].append(val_metrics['loss'])
 
                     if world_size > 1:
                         # Gather evaluation metrics from all processes
                         gathered_metrics = [None] * world_size
-                        torch.distributed.all_gather_object(gathered_metrics, val_metrics)
+                        torch.distributed.all_gather_object(
+                            gathered_metrics, val_metrics
+                        )
 
                         if main_process:
                             # Aggregate metrics across all processes
-                            total_loss = sum(metric['loss'] for metric in gathered_metrics) / world_size
+                            total_loss = (
+                                sum(
+                                    metric['loss']
+                                    for metric in gathered_metrics
+                                )
+                                / world_size
+                            )
                             print(
                                 f'\nLyla: Evaluating the {model_name} model on step {total_steps}'
                                 f' Average Loss: {total_loss:.4f}.'
@@ -501,11 +559,15 @@ def main() -> None:
                             best_model_step[model_name] = total_steps
                             patient_counters[model_name] = 0
                             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-                            checkpoint_filename = f'{model_name}-checkpoint-step{total_steps}-{timestamp}.pt'
-                            checkpoint_path = os.path.join(checkpoint_dir, checkpoint_filename)
+                            checkpoint_filename = f'{model_name}-{controller}-chkpt-step{total_steps}-{timestamp}.safetensors'
+                            checkpoint_path = os.path.join(
+                                checkpoint_dir, checkpoint_filename
+                            )
                             best_checkpoints[model_name] = checkpoint_filename
 
-                            torch.save(models[model_name].state_dict(), checkpoint_path)
+                            torch.save(
+                                models[model_name].state_dict(), checkpoint_path
+                            )
                             print(
                                 f'Lyla: Wow! We have a new personal best for the {model_name} model at step {total_steps}.'
                                 f' The validation loss improved to: {val_loss:.4f}!'
@@ -533,21 +595,33 @@ def main() -> None:
     if main_process:
         print('\nLyla: Training completed!')
         for model_name in args.models:
-            best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoints[model_name])
+            best_checkpoint_path = os.path.join(
+                checkpoint_dir, best_checkpoints[model_name]
+            )
             models[model_name].load_state_dict(torch.load(best_checkpoint_path))
-            print(f"\nLyla: Here's the best model information for the {model_name} model:")
+            print(
+                f"\nLyla: Here's the best model information for the {model_name} model:"
+            )
             print(f'    Best model at step {best_model_step[model_name]}')
-            print(f'    Best model validation loss: {best_val_losses[model_name]:.4f}')
+            print(
+                f'    Best model validation loss: {best_val_losses[model_name]:.4f}'
+            )
             print(f'    Best model checkpoint saved at: {best_checkpoint_path}')
 
             # Save the training details to a file
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
             training_details = f'training_details_{model_name}_{timestamp}.txt'
             with open(training_details, 'w') as f:
-                f.write(f'Training completed for {model_name} on {controller} at: {datetime.now()}\n')
+                f.write(
+                    f'Training completed for {model_name} on {controller} at: {datetime.now()}\n'
+                )
                 f.write(f'Best model step: {best_model_step[model_name]}\n')
-                f.write(f'Best model validation loss: {best_val_losses[model_name]:.4f}\n')
-                f.write(f'Best model checkpoint saved at: {best_checkpoint_path}\n')
+                f.write(
+                    f'Best model validation loss: {best_val_losses[model_name]:.4f}\n'
+                )
+                f.write(
+                    f'Best model checkpoint saved at: {best_checkpoint_path}\n'
+                )
             print(
                 f'Lyla: Congratulations on completing the training run for the {model_name} model!'
                 f' Details are saved in {training_details}.'

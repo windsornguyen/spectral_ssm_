@@ -11,7 +11,6 @@
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from typing import Tuple, Dict, List
 from model import Architecture
 from synthetic import (
     generate_copy,
@@ -45,7 +44,7 @@ class Benchmark:
         self.model.to(self.device)
         self.criterion = torch.nn.CrossEntropyLoss()
 
-    def evaluate(self, dataset_name: str, dataloader: DataLoader) -> Dict[str, float]:
+    def evaluate(self, dataset_name: str, dataloader: DataLoader) -> dict[str, float]:
         """
         Evaluate the model on a specific dataset.
 
@@ -54,7 +53,7 @@ class Benchmark:
           dataloader: DataLoader for the dataset.
 
         Returns:
-          A Dictionary containing the average loss and accuracy.
+          A dictionary containing the average loss and accuracy.
         """
         self.model.eval()
         total_loss = 0.0
@@ -85,13 +84,13 @@ class Benchmark:
         return {'loss': avg_loss, 'accuracy': avg_accuracy}
 
     def benchmark(
-        self, datasets: List[Tuple[str, torch.utils.data.Dataset]], batch_size: int = 48
+        self, datasets: list[tuple[str, torch.utils.data.Dataset]], batch_size: int = 48
     ) -> None:
         """
         Benchmark the model on multiple datasets.
 
         Args:
-          datasets: List of Tuples containing dataset name and dataset.
+          datasets: List of tuples containing dataset name and dataset.
           batch_size: Batch size for evaluation.
         """
         for dataset_name, dataset in datasets:
@@ -118,7 +117,7 @@ def main():
         learnable_m_y=True,
     ).to(device)
     checkpoint = torch.load('../checkpoint.pt', map_location=device)
-    model.load_state_Dict(checkpoint)
+    model.load_state_dict(checkpoint)
 
     datasets = [
         (

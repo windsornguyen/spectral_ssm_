@@ -8,7 +8,7 @@
 
 import torch
 from torch.optim import AdamW
-from typing import Tuple, Dict, List
+
 
 class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
     """Cosine decay with linear warmup."""
@@ -41,7 +41,7 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
         self.warmup_steps = warmup_steps
         super().__init__(optimizer, last_epoch)
 
-    def get_lr(self) -> List[float]:
+    def get_lr(self) -> list[float]:
         """Get learning rate for a given step.
 
         Returns:
@@ -69,7 +69,7 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
             self.min_lr + (self.lr - self.min_lr) * cos_factor for _ in self.base_lrs
         ]
 
-    def get_last_lr(self) -> List[float]:
+    def get_last_lr(self) -> list[float]:
         """Get last computed learning rate by the scheduler.
 
         Returns:
@@ -80,13 +80,12 @@ class WarmupCosineDecay(torch.optim.lr_scheduler._LRScheduler):
 
 def get_optimizer(
     model: torch.nn.Module,
-    num_steps: int = 3_500,
-    warmup_steps: int = 350,
-    learning_rate: float = 1e-3,
-    weight_decay: float = 1e-1,
-    m_y_learning_rate: float = 5e-5,
-    m_y_weight_decay: float = 0,
-) -> Tuple[torch.optim.AdamW, WarmupCosineDecay]:
+    num_steps: int,
+    warmup_steps: int,
+    learning_rate: float,
+    weight_decay: float,
+    **kwargs,
+) -> tuple[torch.optim.AdamW, WarmupCosineDecay]:
     """Get the AdamW optimizer with warmup cosine decay scheduler.
 
     Args:
@@ -95,31 +94,47 @@ def get_optimizer(
         warmup_steps (int): The number of steps to warmup for.
         learning_rate (float): The peak learning rate to reach.
         weight_decay (float): The weight decay for default parameters.
-        m_y_learning_rate (float): The learning rate for m_y parameters.
-        m_y_weight_decay (float): The weight decay for m_y parameters.
+        **kwargs: Additional keyword arguments specific to each model.
 
     Returns:
-        Tuple[torch.optim.AdamW, WarmupCosineDecay]: 
+        tuple[torch.optim.AdamW, WarmupCosineDecay]: 
             The AdamW optimizer and the warmup cosine decay scheduler.
     """
-    m_y_params = []
-    default_params = []
-    for name, param in model.named_parameters():
-        if name.startswith('m_y'):
-            m_y_params.append(param)
-        else:
-            default_params.append(param)
-
     param_groups = [
-        {'params': default_params, 'lr': learning_rate, 'weight_decay': weight_decay},
         {
-            'params': m_y_params,
-            'lr': m_y_learning_rate,
-            'weight_decay': m_y_weight_decay,
-        },
+            'params': model.parameters(), 
+            'lr': learning_rate, 
+            'weight_decay': weight_decay
+        }
     ]
 
-    optimizer = AdamW(param_groups, betas=(0.9, 0.999), eps=1e-8)
+    if 'stu' in model.__class__.__name__.lower():
+        m_y_params = []
+        default_params = []
+        for name, param in model.named_parameters():
+            if name.startswith('m_y'):
+                m_y_params.append(param)
+            else:
+                default_params.append(param)
+
+        param_groups = [
+            {'params': default_params, 'lr': learning_rate, 'weight_decay': weight_decay},
+            {
+                'params': m_y_params,
+                'lr': kwargs.get('m_y_learning_rate', 5e-5),
+                'weight_decay': kwargs.get('m_y_weight_decay', 0),
+            },
+        ]
+
+    optimizer = AdamW(
+        param_groups,
+        lr=learning_rate,
+        betas=(0.9, 0.999),
+        eps=1e-8,
+        weight_decay=weight_decay,
+        amsgrad=True, # Can provide faster convergence in some cases.
+        fused=True, # Combine weight decay and update steps into one operation.
+    )
 
     scheduler = WarmupCosineDecay(
         optimizer,

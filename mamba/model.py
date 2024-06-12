@@ -1,7 +1,7 @@
 # =============================================================================#
 # Authors: Tri Dao, Albert Gu, Windsor Nguyen
 # File: (Mamba) model.py
-# Adapted from 
+# Adapted from
 # https://github.com/state-spaces/mamba/blob/main/mamba_ssm/modules/mamba2.py
 # =============================================================================#
 
@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from einops import rearrange, repeat
 from dataclasses import dataclass
-from typing import Optional, Tuple, Any
+from typing import Optional, Any
 
 try:
     from causal_conv1d import causal_conv1d_fn, causal_conv1d_update
@@ -27,7 +27,10 @@ except ImportError:
 
 from mamba.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
 
-from mamba.distributed.tensor_parallel import ColumnParallelLinear, RowParallelLinear
+from mamba.distributed.tensor_parallel import (
+    ColumnParallelLinear,
+    RowParallelLinear,
+)
 from mamba.distributed.distributed_utils import all_reduce, reduce_scatter
 
 from mamba.ops.triton.ssd_combined import mamba_chunk_scan_combined
@@ -39,30 +42,44 @@ class Mamba2Config:
     d_model: int
     d_state: int = 128
     d_conv: int = 4
-    conv_init: Optional[float] = None  # TODO: Specify type as float or None if it's a scalar value
+    conv_init: Optional[float] = (
+        None  # TODO: Specify type as float or None if it's a scalar value
+    )
     expand: int = 2
     headdim: int = 64
-    d_ssm: Optional[int] = None  # TODO: If not None, only apply SSM to this many dimensions (rest is gated MLP)
+    d_ssm: Optional[int] = (
+        None  # TODO: If not None, only apply SSM to this many dimensions (rest is gated MLP)
+    )
     ngroups: int = 1
-    A_init_range: Tuple[int, int] = (1, 16)  # TODO: Specify type as Tuple[int, int]
+    A_init_range: tuple[int, int] = (
+        1,
+        16,
+    )  # TODO: Specify type as tuple[int, int]
     D_has_hdim: bool = False
     rmsnorm: bool = True
     norm_before_gate: bool = False
     dt_min: float = 0.001
     dt_max: float = 0.1
     dt_init_floor: float = 1e-4
-    dt_limit: Tuple[float, float] = (0.0, float('inf'))  # TODO: Specify type as Tuple[float, float]
+    dt_limit: tuple[float, float] = (
+        0.0,
+        float('inf'),
+    )  # TODO: Specify type as tuple[float, float]
     bias: bool = False
     conv_bias: bool = True
     chunk_size: int = 256
     use_mem_eff_path: bool = True
     layer_idx: Optional[int] = None  # TODO: Specify type as Optional[int]
-    process_group: Optional[Any] = None  # TODO: Use Any or a specific type if known
+    process_group: Optional[Any] = (
+        None  # TODO: Use Any or a specific type if known
+    )
     sequence_parallel: bool = True
     device: Optional[Any] = None  # TODO: Use Any or specify a more precise type
     dtype: Optional[Any] = None  # TODO: Use Any or specify a more precise type
     dropout: float = 0.25
-    loss_fn: Optional[Any] = None  # TODO: Specify the type if it's a callable or similar
+    loss_fn: Optional[Any] = (
+        None  # TODO: Specify the type if it's a callable or similar
+    )
     max_len: int = 1000
     d_out: int = 29
 
@@ -88,16 +105,23 @@ class Mamba2(nn.Module):
         self.expand = config.expand
         self.process_group = config.process_group
         self.sequence_parallel = config.sequence_parallel
-        self.world_size = 1 if config.process_group is None else config.process_group.size()
-        self.local_rank = 0 if config.process_group is None else config.process_group.rank()
+        self.world_size = (
+            1 if config.process_group is None else config.process_group.size()
+        )
+        self.local_rank = (
+            0 if config.process_group is None else config.process_group.rank()
+        )
 
         self.d_inner = (self.expand * self.d_model) // self.world_size
         assert self.d_inner * self.world_size == self.expand * self.d_model
 
         self.headdim = config.headdim
-        self.d_ssm = self.d_inner if config.d_ssm is None else config.d_ssm // self.world_size
+        self.d_ssm = (
+            self.d_inner
+            if config.d_ssm is None
+            else config.d_ssm // self.world_size
+        )
         assert config.ngroups % self.world_size == 0
-        
 
         self.ngroups = config.ngroups // self.world_size
         assert self.d_ssm % self.headdim == 0
@@ -107,22 +131,27 @@ class Mamba2(nn.Module):
         self.norm_before_gate = config.norm_before_gate
         self.dt_limit = config.dt_limit
         self.loss_fn = config.loss_fn
-        self.activation = "silu"
+        self.activation = 'silu'
         self.chunk_size = config.chunk_size
         self.use_mem_eff_path = config.use_mem_eff_path
         self.layer_idx = config.layer_idx
-        
+
         # Order: [z, x, B, C, dt]
-        d_in_proj = 2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
+        d_in_proj = (
+            2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
+        )
         if self.process_group is None:
-            self.in_proj = nn.Linear(self.d_model, d_in_proj, bias=config.bias, **factory_kwargs)
+            self.in_proj = nn.Linear(
+                self.d_model, d_in_proj, bias=config.bias, **factory_kwargs
+            )
         else:
             self.in_proj = ColumnParallelLinear(
-                self.d_model, d_in_proj * self.world_size, 
+                self.d_model,
+                d_in_proj * self.world_size,
                 bias=config.bias,
-                process_group=self.process_group, 
+                process_group=self.process_group,
                 sequence_parallel=self.sequence_parallel,
-                **factory_kwargs
+                **factory_kwargs,
             )
 
         conv_dim = self.d_ssm + 2 * self.ngroups * self.d_state
@@ -136,13 +165,16 @@ class Mamba2(nn.Module):
             **factory_kwargs,
         )
         if self.conv_init is not None:
-            nn.init.uniform_(self.conv1d.weight, -self.conv_init, self.conv_init)
+            nn.init.uniform_(
+                self.conv1d.weight, -self.conv_init, self.conv_init
+            )
 
         self.act = nn.SiLU()
 
         # Initialize log dt bias
         dt = torch.exp(
-            torch.rand(self.nheads, **factory_kwargs) * (math.log(config.dt_max) - math.log(config.dt_min))
+            torch.rand(self.nheads, **factory_kwargs)
+            * (math.log(config.dt_max) - math.log(config.dt_min))
             + math.log(config.dt_min)
         )
         dt = torch.clamp(dt, min=config.dt_init_floor)
@@ -153,28 +185,49 @@ class Mamba2(nn.Module):
         # name.endswith("bias") in param_grouping.py
         self.dt_bias._no_weight_decay = True
 
-        assert config.A_init_range[0] > 0 and config.A_init_range[1] >= config.A_init_range[0]
-        A = torch.empty(self.nheads, dtype=torch.float32, device=config.device).uniform_(*config.A_init_range)
+        assert (
+            config.A_init_range[0] > 0
+            and config.A_init_range[1] >= config.A_init_range[0]
+        )
+        A = torch.empty(
+            self.nheads, dtype=torch.float32, device=config.device
+        ).uniform_(*config.A_init_range)
         A_log = torch.log(A).to(dtype=config.dtype)
         self.A_log = nn.Parameter(A_log)
         self.A_log._no_weight_decay = True
 
         # D "skip" parameter
-        self.D = nn.Parameter(torch.ones(self.d_ssm if self.D_has_hdim else self.nheads, device=config.device))
+        self.D = nn.Parameter(
+            torch.ones(
+                self.d_ssm if self.D_has_hdim else self.nheads,
+                device=config.device,
+            )
+        )
         self.D._no_weight_decay = True
 
         if self.rmsnorm:
             assert RMSNormGated is not None
-            self.norm = RMSNormGated(self.d_ssm, eps=1e-5, norm_before_gate=self.norm_before_gate,
-                                     group_size=self.d_ssm // config.ngroups, **factory_kwargs)
+            self.norm = RMSNormGated(
+                self.d_ssm,
+                eps=1e-5,
+                norm_before_gate=self.norm_before_gate,
+                group_size=self.d_ssm // config.ngroups,
+                **factory_kwargs,
+            )
 
         if self.process_group is None:
-            self.out_proj = nn.Linear(self.d_inner, config.d_out, bias=config.bias, **factory_kwargs)
+            self.out_proj = nn.Linear(
+                self.d_inner, config.d_out, bias=config.bias, **factory_kwargs
+            )
         else:
-            self.out_proj = RowParallelLinear(self.d_inner * self.world_size, config.d_out, bias=config.bias,
-                                              process_group=self.process_group, sequence_parallel=self.sequence_parallel,
-                                              **factory_kwargs)
-
+            self.out_proj = RowParallelLinear(
+                self.d_inner * self.world_size,
+                config.d_out,
+                bias=config.bias,
+                process_group=self.process_group,
+                sequence_parallel=self.sequence_parallel,
+                **factory_kwargs,
+            )
 
     def forward(self, inputs, targets=None, inference_params=None):
         """
@@ -186,7 +239,9 @@ class Mamba2(nn.Module):
 
         conv_state, ssm_state = None, None
         if inference_params is not None:
-            conv_state, ssm_state = self._get_states_from_cache(inference_params, batch_size)
+            conv_state, ssm_state = self._get_states_from_cache(
+                inference_params, batch_size
+            )
             if inference_params.seqlen_offset > 0:
                 # The states are updated inplace
                 out, _, _ = self.step(u, conv_state, ssm_state)
@@ -194,15 +249,21 @@ class Mamba2(nn.Module):
 
         zxbcdt = self.in_proj(u)  # (B, L, d_in_proj)
         A = -torch.exp(self.A_log)  # (nheads) or (d_inner, d_state)
-        dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
+        dt_limit_kwargs = (
+            {}
+            if self.dt_limit == (0.0, float('inf'))
+            else dict(dt_limit=self.dt_limit)
+        )
         if self.use_mem_eff_path and inference_params is None:
             out = mamba_split_conv1d_scan_combined(
                 zxbcdt,
-                rearrange(self.conv1d.weight, "d 1 w -> d w"),
+                rearrange(self.conv1d.weight, 'd 1 w -> d w'),
                 self.conv1d.bias,
                 self.dt_bias,
                 A,
-                D=rearrange(self.D, "(h p) -> h p", p=self.headdim) if self.D_has_hdim else self.D,
+                D=rearrange(self.D, '(h p) -> h p', p=self.headdim)
+                if self.D_has_hdim
+                else self.D,
                 chunk_size=self.chunk_size,
                 seq_idx=None,
                 activation=self.activation,
@@ -216,40 +277,70 @@ class Mamba2(nn.Module):
                 **dt_limit_kwargs,
             )
             if self.process_group is not None:
-                reduce_fn = reduce_scatter if self.sequence_parallel else all_reduce
+                reduce_fn = (
+                    reduce_scatter if self.sequence_parallel else all_reduce
+                )
                 out = reduce_fn(out, self.process_group)
         else:
-            d_mlp = (zxbcdt.shape[-1] - 2 * self.d_ssm - 2 * self.ngroups * self.d_state - self.nheads) // 2
+            d_mlp = (
+                zxbcdt.shape[-1]
+                - 2 * self.d_ssm
+                - 2 * self.ngroups * self.d_state
+                - self.nheads
+            ) // 2
             z0, x0, z, xBC, dt = torch.split(
                 zxbcdt,
-                [d_mlp, d_mlp, self.d_ssm, self.d_ssm + 2 * self.ngroups * self.d_state, self.nheads],
-                dim=-1
+                [
+                    d_mlp,
+                    d_mlp,
+                    self.d_ssm,
+                    self.d_ssm + 2 * self.ngroups * self.d_state,
+                    self.nheads,
+                ],
+                dim=-1,
             )
             if conv_state is not None:
-                xBC_t = rearrange(xBC, "b l d -> b d l")
-                conv_state.copy_(F.pad(xBC_t, (self.d_conv - xBC_t.shape[-1], 0)))  # Update state (B D W)
-            assert self.activation in ["silu", "swish"]
-            if causal_conv1d_fn is None or self.activation not in ["silu", "swish"]:
+                xBC_t = rearrange(xBC, 'b l d -> b d l')
+                conv_state.copy_(
+                    F.pad(xBC_t, (self.d_conv - xBC_t.shape[-1], 0))
+                )  # Update state (B D W)
+            assert self.activation in ['silu', 'swish']
+            if causal_conv1d_fn is None or self.activation not in [
+                'silu',
+                'swish',
+            ]:
                 xBC = self.act(
                     self.conv1d(xBC.transpose(1, 2)).transpose(1, 2)
                 )  # (B, L, self.d_ssm + 2 * ngroups * d_state)
             else:
                 xBC = causal_conv1d_fn(
                     xBC.transpose(1, 2),
-                    rearrange(self.conv1d.weight, "d 1 w -> d w"),
+                    rearrange(self.conv1d.weight, 'd 1 w -> d w'),
                     bias=self.conv1d.bias,
                     activation=self.activation,
                 ).transpose(1, 2)
-            x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
+            x, B, C = torch.split(
+                xBC,
+                [
+                    self.d_ssm,
+                    self.ngroups * self.d_state,
+                    self.ngroups * self.d_state,
+                ],
+                dim=-1,
+            )
             y = mamba_chunk_scan_combined(
-                rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
+                rearrange(x, 'b l (h p) -> b l h p', p=self.headdim),
                 dt,
                 A,
-                rearrange(B, "b l (g n) -> b l g n", g=self.ngroups),
-                rearrange(C, "b l (g n) -> b l g n", g=self.ngroups),
+                rearrange(B, 'b l (g n) -> b l g n', g=self.ngroups),
+                rearrange(C, 'b l (g n) -> b l g n', g=self.ngroups),
                 chunk_size=self.chunk_size,
-                D=rearrange(self.D, "(h p) -> h p", p=self.headdim) if self.D_has_hdim else self.D,
-                z=rearrange(z, "b l (h p) -> b l h p", p=self.headdim) if not self.rmsnorm else None,
+                D=rearrange(self.D, '(h p) -> h p', p=self.headdim)
+                if self.D_has_hdim
+                else self.D,
+                z=rearrange(z, 'b l (h p) -> b l h p', p=self.headdim)
+                if not self.rmsnorm
+                else None,
                 dt_bias=self.dt_bias,
                 dt_softplus=True,
                 seq_idx=None,
@@ -259,7 +350,7 @@ class Mamba2(nn.Module):
             if ssm_state is not None:
                 y, last_state = y
                 ssm_state.copy_(last_state)
-            y = rearrange(y, "b l h p -> b l (h p)")
+            y = rearrange(y, 'b l h p -> b l (h p)')
             if self.rmsnorm:
                 y = self.norm(y, z)
             if d_mlp > 0:
@@ -276,20 +367,38 @@ class Mamba2(nn.Module):
 
     def step(self, hidden_states, conv_state, ssm_state):
         dtype = hidden_states.dtype
-        assert hidden_states.shape[1] == 1, "Only support decoding with 1 token at a time for now"
+        assert (
+            hidden_states.shape[1] == 1
+        ), 'Only support decoding with 1 token at a time for now'
         zxbcdt = self.in_proj(hidden_states.squeeze(1))  # (B 2D)
-        d_mlp = (zxbcdt.shape[-1] - 2 * self.d_ssm - 2 * self.ngroups * self.d_state - self.nheads) // 2
+        d_mlp = (
+            zxbcdt.shape[-1]
+            - 2 * self.d_ssm
+            - 2 * self.ngroups * self.d_state
+            - self.nheads
+        ) // 2
         z0, x0, z, xBC, dt = torch.split(
             zxbcdt,
-            [d_mlp, d_mlp, self.d_ssm, self.d_ssm + 2 * self.ngroups * self.d_state, self.nheads],
-            dim=-1
+            [
+                d_mlp,
+                d_mlp,
+                self.d_ssm,
+                self.d_ssm + 2 * self.ngroups * self.d_state,
+                self.nheads,
+            ],
+            dim=-1,
         )
 
         # Conv step
         if causal_conv1d_update is None:
-            conv_state.copy_(torch.roll(conv_state, shifts=-1, dims=-1))  # Update state (B D W)
+            conv_state.copy_(
+                torch.roll(conv_state, shifts=-1, dims=-1)
+            )  # Update state (B D W)
             conv_state[:, :, -1] = xBC
-            xBC = torch.sum(conv_state * rearrange(self.conv1d.weight, "d 1 w -> d w"), dim=-1)  # (B D)
+            xBC = torch.sum(
+                conv_state * rearrange(self.conv1d.weight, 'd 1 w -> d w'),
+                dim=-1,
+            )  # (B D)
             if self.conv1d.bias is not None:
                 xBC = xBC + self.conv1d.bias
             xBC = self.act(xBC).to(dtype=dtype)
@@ -297,43 +406,65 @@ class Mamba2(nn.Module):
             xBC = causal_conv1d_update(
                 xBC,
                 conv_state,
-                rearrange(self.conv1d.weight, "d 1 w -> d w"),
+                rearrange(self.conv1d.weight, 'd 1 w -> d w'),
                 self.conv1d.bias,
                 self.activation,
             )
 
-        x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
+        x, B, C = torch.split(
+            xBC,
+            [
+                self.d_ssm,
+                self.ngroups * self.d_state,
+                self.ngroups * self.d_state,
+            ],
+            dim=-1,
+        )
         A = -torch.exp(self.A_log.float())  # (nheads,)
 
         # SSM step
         if selective_state_update is None:
-            assert self.ngroups == 1, "Only support ngroups=1 for this inference code path"
+            assert (
+                self.ngroups == 1
+            ), 'Only support ngroups=1 for this inference code path'
             # Discretize A and B
-            dt = F.softplus(dt + self.dt_bias.to(dtype=dt.dtype))  # (batch, nheads)
+            dt = F.softplus(
+                dt + self.dt_bias.to(dtype=dt.dtype)
+            )  # (batch, nheads)
             dA = torch.exp(dt * A)  # (batch, nheads)
-            x = rearrange(x, "b (h p) -> b h p", p=self.headdim)
-            dBx = torch.einsum("bh,bn,bhp->bhpn", dt, B, x)
-            ssm_state.copy_(ssm_state * rearrange(dA, "b h -> b h 1 1") + dBx)
-            y = torch.einsum("bhpn,bn->bhp", ssm_state.to(dtype), C)
-            y = y + rearrange(self.D.to(dtype), "h -> h 1") * x
-            y = rearrange(y, "b h p -> b (h p)")
+            x = rearrange(x, 'b (h p) -> b h p', p=self.headdim)
+            dBx = torch.einsum('bh,bn,bhp->bhpn', dt, B, x)
+            ssm_state.copy_(ssm_state * rearrange(dA, 'b h -> b h 1 1') + dBx)
+            y = torch.einsum('bhpn,bn->bhp', ssm_state.to(dtype), C)
+            y = y + rearrange(self.D.to(dtype), 'h -> h 1') * x
+            y = rearrange(y, 'b h p -> b (h p)')
             if not self.rmsnorm:
                 y = y * self.act(z)  # (B D)
         else:
-            A = repeat(A, "h -> h p n", p=self.headdim, n=self.d_state).to(dtype=torch.float32)
-            dt = repeat(dt, "b h -> b h p", p=self.headdim)
-            dt_bias = repeat(self.dt_bias, "h -> h p", p=self.headdim)
-            D = repeat(self.D, "h -> h p", p=self.headdim)
-            B = rearrange(B, "b (g n) -> b g n", g=self.ngroups)
-            C = rearrange(C, "b (g n) -> b g n", g=self.ngroups)
-            x_reshaped = rearrange(x, "b (h p) -> b h p", p=self.headdim)
-            if not self.rmsnorm:
-                z = rearrange(z, "b (h p) -> b h p", p=self.headdim)
-            y = selective_state_update(
-                ssm_state, x_reshaped, dt, A, B, C, D, z=z if not self.rmsnorm else None,
-                dt_bias=dt_bias, dt_softplus=True
+            A = repeat(A, 'h -> h p n', p=self.headdim, n=self.d_state).to(
+                dtype=torch.float32
             )
-            y = rearrange(y, "b h p -> b (h p)")
+            dt = repeat(dt, 'b h -> b h p', p=self.headdim)
+            dt_bias = repeat(self.dt_bias, 'h -> h p', p=self.headdim)
+            D = repeat(self.D, 'h -> h p', p=self.headdim)
+            B = rearrange(B, 'b (g n) -> b g n', g=self.ngroups)
+            C = rearrange(C, 'b (g n) -> b g n', g=self.ngroups)
+            x_reshaped = rearrange(x, 'b (h p) -> b h p', p=self.headdim)
+            if not self.rmsnorm:
+                z = rearrange(z, 'b (h p) -> b h p', p=self.headdim)
+            y = selective_state_update(
+                ssm_state,
+                x_reshaped,
+                dt,
+                A,
+                B,
+                C,
+                D,
+                z=z if not self.rmsnorm else None,
+                dt_bias=dt_bias,
+                dt_softplus=True,
+            )
+            y = rearrange(y, 'b h p -> b (h p)')
         if self.rmsnorm:
             y = self.norm(y, z)
         if d_mlp > 0:
@@ -341,19 +472,32 @@ class Mamba2(nn.Module):
         out = self.out_proj(y)
         return out.unsqueeze(1), conv_state, ssm_state
 
-    def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
+    def allocate_inference_cache(
+        self, batch_size, max_seqlen, dtype=None, **kwargs
+    ):
         device = self.out_proj.weight.device
         conv_dtype = self.conv1d.weight.dtype if dtype is None else dtype
         conv_state = torch.zeros(
-            batch_size, self.conv1d.weight.shape[0], self.d_conv, device=device, dtype=conv_dtype
+            batch_size,
+            self.conv1d.weight.shape[0],
+            self.d_conv,
+            device=device,
+            dtype=conv_dtype,
         )
         ssm_dtype = self.in_proj.weight.dtype if dtype is None else dtype
         ssm_state = torch.zeros(
-            batch_size, self.nheads, self.headdim, self.d_state, device=device, dtype=ssm_dtype
+            batch_size,
+            self.nheads,
+            self.headdim,
+            self.d_state,
+            device=device,
+            dtype=ssm_dtype,
         )
         return conv_state, ssm_state
 
-    def _get_states_from_cache(self, inference_params, batch_size, initialize_states=False):
+    def _get_states_from_cache(
+        self, inference_params, batch_size, initialize_states=False
+    ):
         assert self.layer_idx is not None
         if self.layer_idx not in inference_params.key_value_memory_dict:
             batch_shape = (batch_size,)
@@ -372,9 +516,14 @@ class Mamba2(nn.Module):
                 device=self.in_proj.weight.device,
                 dtype=self.in_proj.weight.dtype,
             )
-            inference_params.key_value_memory_dict[self.layer_idx] = (conv_state, ssm_state)
+            inference_params.key_value_memory_dict[self.layer_idx] = (
+                conv_state,
+                ssm_state,
+            )
         else:
-            conv_state, ssm_state = inference_params.key_value_memory_dict[self.layer_idx]
+            conv_state, ssm_state = inference_params.key_value_memory_dict[
+                self.layer_idx
+            ]
             # TODO: What if batch size changes between generation, and we reuse the same states?
             if initialize_states:
                 conv_state.zero_()

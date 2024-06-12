@@ -25,7 +25,6 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
     return z
 
 
-
 def get_top_hankel_eigh(
     n: int, 
     k: int, 
@@ -97,26 +96,31 @@ def tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: Convolution result of shape [seq_len,].
     """
-    # Sequence length
-    seq_len = v.size(0)
+    # Set the device
+    device = v.device
 
-    # Calculate the next power of two for padding length
-    target_tensor = torch.tensor(2 * seq_len - 1)
+    # Calculate the sequence length and determine the target tensor
+    seq_len = max(v.size(0), u.size(0))
+    target_tensor = torch.tensor(2 * seq_len - 1, device=device, dtype=torch.float32)
+
+    # Calculate the ceiling of the log base 2 of the target tensor
     ceil_log_base_2 = torch.ceil(torch.log2(target_tensor))
+
+    # Calculate the padded length as the next power of two
     padded_len = int(2 ** ceil_log_base_2)
 
     # Padding for FFT efficiency (lengths that are powers of two perform best)
     v_padded = F.pad(v, (0, padded_len - seq_len))
     u_padded = F.pad(u, (0, padded_len - seq_len))
 
-    # FFT and element-wise multiplication for convolution
+    # Perform FFT on both padded inputs
     v_fft = torch.fft.rfft(v_padded)
     u_fft = torch.fft.rfft(u_padded)
-    
+
     # Element-wise multiplication in the frequency domain
     output_fft = v_fft * u_fft
 
-    # Inverse FFT to return to time domain
+    # Inverse FFT to return to the time domain
     output = torch.fft.irfft(output_fft, n=padded_len)
     
     # Truncate to the original sequence length
@@ -154,38 +158,17 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: A matrix of shape [seq_len, d_out].
     """
-    # # WRONG but faster implementation.
-    # d_out, k, _ = m_y.shape
-    # batch_size = deltas.size(0)
-
-    # # Initialize carry with zeros for the entire batch
-    # carry = torch.zeros(batch_size, k, d_out, device=deltas.device)
-
-    # # Calculate all tensor dot products at once (requires `m_y` to be compatible)
-    # outputs = torch.einsum('ijk,blk->bi', m_y, carry) + deltas
-
-    # # Define a shift matrix that shifts all outputs down and places the latest output at the top
-    # shift_matrix = torch.eye(k, k, device=deltas.device)
-    # shift_matrix = torch.roll(shift_matrix, 1, dims=0)
-
-    # # Update carry for the next iteration
-    # new_carry = torch.matmul(shift_matrix, carry.reshape(batch_size, k, d_out)).reshape(batch_size, k, d_out)
-    # new_carry[:, 0, :] = outputs
-
-    # # Result collection
-    # ys = outputs
-    
-    # return ys
-
     d_out, k, _ = m_y.shape
     carry = torch.zeros((k, d_out), device=deltas.device)
     ys = []
 
     for x in deltas:
-        output = torch.tensordot(m_y, carry, dims=2) + x
+        output = torch.tensordot(m_y, carry, dims=2)
+        output = output + x
         carry = torch.roll(carry, 1, dims=0)
 
         # Avoid in-place operation by reconstructing the carry tensor
+        # TODO: Once torch.vmap is removed, we can modify in-place
         carry = torch.cat((output.unsqueeze(0), carry[1:]), dim=0)
 
         ys.append(output.unsqueeze(0))
@@ -239,13 +222,11 @@ def compute_x_tilde(
         torch.Tensor: x_tilde: A tensor of shape [seq_len, k * d_in].
     """
     eig_vals, eig_vecs = eigh
-    # print("compute_x_tilde - eig_vals:", eig_vals.sgh)
-    # print("compute_x_tilde - eig_vecs:", eig_vecs)
-    # print("compute_x_tilde - inputs:", inputs)
     seq_len = inputs.shape[0]
-    x_tilde = conv(eig_vecs, inputs)
-    x_tilde *= torch.unsqueeze(torch.unsqueeze(eig_vals**0.25, 0), -1)
-    # print("compute_x_tilde - x_tilde after operations:", x_tilde)
 
-    # This shift is introduced as the rest is handled by the AR part.
-    return shift(shift(x_tilde.reshape((seq_len, -1))))
+    x_tilde = conv(eig_vecs, inputs)
+    x_tilde *= eig_vals.unsqueeze(0).unsqueeze(2) ** 0.25
+
+    # NOTE: Shifting twice is incorrect, noted by Evan.
+    # return shift_torch(shift_torch(x_tilde.reshape((seq_len, -1))))
+    return x_tilde.reshape((seq_len, -1))

@@ -5,6 +5,7 @@ import numpy as np
 import time
 import torch.autograd.profiler as profiler
 
+
 def shift_torch(x: torch.Tensor) -> torch.Tensor:
     """Shift time axis by one to align x_{t-1} and x_t.
 
@@ -12,7 +13,7 @@ def shift_torch(x: torch.Tensor) -> torch.Tensor:
         x (torch.Tensor): A tensor of shape [seq_len, d].
 
     Returns:
-        torch.Tensor: A tensor of shape [seq_len, d] where index [0, :] is all zeros and 
+        torch.Tensor: A tensor of shape [seq_len, d] where index [0, :] is all zeros and
             [i, :] is equal to x[i - 1, :] for i > 0.
     """
     return torch.cat([torch.zeros_like(x[:1]), x[:-1]], dim=0)
@@ -30,6 +31,7 @@ def shift_jax(x: jnp.ndarray) -> jnp.ndarray:
         to x[i - 1, :] for i > 0.
     """
     return jnp.pad(x, ((1, 0), (0, 0)), mode='constant')[:-1, :]
+
 
 # Set a seed for reproducibility
 np.random.seed(42)
@@ -57,7 +59,7 @@ with profiler.profile(with_stack=True, profile_memory=True) as prof:
     _ = shift_torch(x_torch)
 
 # Print the profiling results for PyTorch
-print(prof.key_averages().table(sort_by="cpu_time_total"))
+print(prof.key_averages().table(sort_by='cpu_time_total'))
 
 # Benchmark PyTorch
 start_time_torch = time.time()
@@ -82,11 +84,13 @@ print('\nComparing the results...')
 if np.allclose(result_torch.numpy(), result_jax, atol=1e-7):
     print('The results from PyTorch and JAX are close enough!')
 else:
-    print('The results from PyTorch and JAX differ more than the acceptable tolerance...')
-    
+    print(
+        'The results from PyTorch and JAX differ more than the acceptable tolerance...'
+    )
+
     # Find the indices where the results differ
     diff_indices = np.where(np.abs(result_torch.numpy() - result_jax) > 1e-7)
-    
+
     # Print the differing indices and values
     print('Differing indices and values:')
     for i in range(len(diff_indices[0])):

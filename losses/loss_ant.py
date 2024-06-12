@@ -7,7 +7,6 @@
 
 import torch
 import torch.nn as nn
-from typing import Tuple, Dict
 
 
 class AntLoss(nn.Module):
@@ -18,7 +17,7 @@ class AntLoss(nn.Module):
         self, 
         outputs: torch.Tensor,
         targets: torch.Tensor
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+    ) -> tuple[torch.Tensor, dict[str, float]]:
         """
         Compute the loss and metrics for a batch of data.
 
@@ -27,8 +26,8 @@ class AntLoss(nn.Module):
             targets (torch.Tensor): The target labels of shape (batch_size, seq_len, d_xt)
 
         Returns:
-            Tuple[torch.Tensor, Dict[str, float]]: 
-            A Tuple of the loss and a dictionary of metrics.
+            tuple[torch.Tensor, Dict[str, float]]: 
+            A tuple of the loss and a dictionary of metrics.
         """
         total_loss = torch.tensor(0.0, device=outputs.device)
         coordinate_loss = torch.tensor(0.0, device=outputs.device)

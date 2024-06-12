@@ -7,7 +7,6 @@
 
 import torch
 from torch.utils.data import TensorDataset
-from typing import Tuple, Dict
 
 def generate_copy(
     num_examples: int = 5,
@@ -34,14 +33,14 @@ def generate_copy(
       remaining 10 entries are set to a_8. The required output sequence consists
       of T + 10 repeated entries of a_8, followed by the first 10 categories of
       the input sequence in exactly the same order. The goal is to minimize the
-      average cross entropy of category preDictions at each time step of the
+      average cross entropy of category predictions at each time step of the
       sequence. The task amounts to having to remember a categorical sequence of
       length 10, for T time steps.
 
       A simple baseline can be established by considering an optimal strategy when
       no memory is available, which we deem the memoryless strategy. The
-      memoryless strategy would be to preDict a_8 for T + 10 entries and then
-      preDict each of the final 10 categories from the set {a_i}_{i=0}^7
+      memoryless strategy would be to predict a_8 for T + 10 entries and then
+      predict each of the final 10 categories from the set {a_i}_{i=0}^7
       independently and uniformly at random. The categorical cross entropy of this
       strategy is \frac{10 log(8)}{T + 20}.
 
@@ -114,7 +113,7 @@ def generate_adding(
       whilst the second 1 entry is located uniformly at random in the second half.
       The output is the sum of the two entries of the first sequence,
       corresponding to where the 1 entries are located in the second sequence. A
-      naive strategy of preDicting 1 as the output regardless of the input
+      naive strategy of predicting 1 as the output regardless of the input
       sequence gives an expected mean squared error of 0.167, the variance of the
       sum of two independent uniform distributions. This is our baseline to beat.
 

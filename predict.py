@@ -2,10 +2,11 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from spectral_ssm import model
+import safetensors
 
 def main():
     # Load the trained model
-    model_path = 'checkpoints/best_model.pt'
+    model_path = 'checkpoints/best_model.safetensors'
     model_args = {
         'd_out': 37,
         'input_len': 1000,
@@ -15,7 +16,8 @@ def main():
         'learnable_m_y': True,
     }
     m = model.STU(**model_args)
-    m.load_state_dict(torch.load(model_path))
+    state_dict = safetensors.load_file(model_path)
+    m.load_state_dict(state_dict)
     m.eval()
 
     # Load the test data
@@ -36,7 +38,7 @@ def main():
     # Predict the next states using the model
     init_idx = 0
     t = 100  # Number of time steps to predict
-    predicted_states, losses = m.predict(test_inputs, test_targets, init=init_idx, t=t)
+    predicted_states, losses = m.predict(input_trajectories, target_trajectories, init=init_idx, t=t)
 
     # Extract the individual losses from the loss tuple
     total_loss, metrics = losses
@@ -50,7 +52,7 @@ def main():
     # Plot the predicted states and ground truth states
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(range(init_idx, init_idx + t), target_trajectories[0, init_idx:init_idx + t, 0], label='Ground Truth')
-    ax.plot(range(init_idx, init_idx + t), [state[0] for state in predicted_states], label='Predicted')
+    ax.plot(range(init_idx, init_idx + t), [state[0][0] for state in predicted_states], label='Predicted')
     ax.set_xlabel('Time Step')
     ax.set_ylabel('State')
     ax.set_title('Predicted vs Ground Truth States')

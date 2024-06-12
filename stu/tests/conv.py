@@ -32,15 +32,9 @@ def tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     v_padded = F.pad(v, (0, padded_len - seq_len))
     u_padded = F.pad(u, (0, padded_len - seq_len))
 
-    print("v_padded shape:", v_padded.shape)
-    print("u_padded shape:", u_padded.shape)
-
     # Perform FFT on both padded inputs
     v_fft = torch.fft.rfft(v_padded)
     u_fft = torch.fft.rfft(u_padded)
-    
-    print("v_fft shape:", v_fft.shape)
-    print("u_fft shape:", u_fft.shape)
     
     # Element-wise multiplication in the frequency domain
     output_fft = v_fft * u_fft
@@ -50,6 +44,7 @@ def tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     
     # Truncate to the original sequence length
     return output[:seq_len]
+
 
 def conv_torch(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     """
@@ -65,29 +60,56 @@ def conv_torch(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     # Convolve each sequence of length `seq_len` in v with each sequence in u.
     mvconv = torch.vmap(tr_conv, in_dims=(1, None), out_dims=1)
     mmconv = torch.vmap(mvconv, in_dims=(None, 1), out_dims=-1)
-    return mmconv(v, u)
+    out = mmconv(v, u)
+
+    return out
+
 
 # JAX implementation using jax.jit
 @jax.jit
 def conv_jax(v: jnp.ndarray, u: jnp.ndarray) -> jnp.ndarray:
-    tr_conv = lambda x, y: jax.scipy.signal.convolve(x, y, method='fft')[:x.shape[0]]
+    tr_conv = lambda x, y: jax.scipy.signal.convolve(x, y, method='fft')[
+        : x.shape[0]
+    ]
     mvconv = jax.vmap(tr_conv, in_axes=(1, None), out_axes=1)
     mmconv = jax.vmap(mvconv, in_axes=(None, 1), out_axes=-1)
     return mmconv(v, u)
 
+
+# Set seed for reproducibility
+np.random.seed(42)
+
 # Use CUDA if available
-device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
+device = torch.device(
+    'cuda'
+    if torch.cuda.is_available()
+    else 'mps'
+    if torch.backends.mps.is_available()
+    else 'cpu'
+)
 
 # Prepare data
-seq_len, k, d_in = torch.randint(1, 1024, (1,)).item(), torch.randint(1, 24, (1,)).item(), torch.randint(1, 1024, (1,)).item()
+batch_size, seq_len, k, d_in = (
+    torch.randint(1, 8, (1,)).item(),
+    torch.randint(1, 1024, (1,)).item(),
+    torch.randint(1, 24, (1,)).item(),
+    torch.randint(1, 1024, (1,)).item(),
+)
+# Without batch_size (if not using vmap)
+# v = np.random.rand(batch_size, seq_len, k)
+# u = np.random.rand(batch_size, seq_len, d_in)
+
 v = np.random.rand(seq_len, k)
 u = np.random.rand(seq_len, d_in)
-v_torch = torch.tensor(v, device=device)
-u_torch = torch.tensor(u, device=device)
+
+v_torch = torch.tensor(v, device=device, dtype=torch.float32)
+u_torch = torch.tensor(u, device=device, dtype=torch.float32)
 v_jax = jnp.array(v)
 u_jax = jnp.array(u)
 
-print(f'Testing convolution function for v of shape [{seq_len}, {k}] and u of shape [{seq_len}, {d_in}].\nDevice: {device}')
+print(
+    f'Testing convolution function for v of shape [{batch_size}, {seq_len}, {k}] and u of shape [{batch_size}, {seq_len}, {d_in}].\nDevice: {device}'
+)
 
 # Warm-up JIT compilation
 _ = conv_torch(v_torch, u_torch)
@@ -104,13 +126,18 @@ time_jax = time.time() - start_time_jax
 
 # Check outputs and shapes
 if output_torch.shape != output_jax.shape:
-    print(f'Shape mismatch between Torch and JAX outputs: Torch shape {output_torch.shape}, JAX shape {output_jax.shape}')
+    print(
+        f'Shape mismatch between Torch and JAX outputs: Torch shape {output_torch.shape}, JAX shape {output_jax.shape}'
+    )
 
 # Check for significant differences
-if not np.allclose(output_torch, output_jax, atol=1e-4): # Note: not accurate past 1e-4
+i = 0
+if not np.allclose(
+    output_torch, output_jax, atol=1e-4
+):  # Note: not accurate past 1e-4
     print('Values differ more than acceptable tolerance.')
     difference_matrix = np.abs(output_torch - output_jax)
-    
+
     # Iterate over the matrix and print differences
     it = np.nditer(difference_matrix, flags=['multi_index'])
     print('Differing Values:')
@@ -118,8 +145,15 @@ if not np.allclose(output_torch, output_jax, atol=1e-4): # Note: not accurate pa
         if it[0] > 1e-4:
             idx = it.multi_index
             diff_value = it[0]
-            print(f'Index: {idx}, Torch: {output_torch[idx]}, JAX: {output_jax[idx]}, Diff: {diff_value}')
+            print(
+                f'Index: {idx}, Torch: {output_torch[idx]}, JAX: {output_jax[idx]}, Diff: {diff_value}'
+            )
         it.iternext()
+        i += 1
+        if i > 5:
+            break
+else:
+    print('Outputs are sufficiently close.')
 
 # Output performance metrics
 print(f'\nExecution Time (PyTorch): {time_torch:.6f}s')
