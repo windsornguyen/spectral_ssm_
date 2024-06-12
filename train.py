@@ -13,7 +13,10 @@ from socket import gethostname
 
 import matplotlib.pyplot as plt
 import numpy as np
+import safetensors
+from safetensors.torch import save_file
 import torch
+import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
@@ -21,12 +24,28 @@ from tqdm import tqdm
 from losses.loss_ant import AntLoss
 from losses.loss_cheetah import HalfCheetahLoss
 from losses.loss_walker import Walker2DLoss
-from stu import model, experiment as exp, optimizer as opt
-from stu.model import STUConfigs
+from stu import experiment as exp, optimizer as opt
+from stu.model import STUConfigs, Architecture
 from stu.physics import physics_data
 from transformer.model import Transformer, TransformerConfigs
 # from mamba.model import Mamba, MambaConfig
 # from jamba.model import Jamba, JambaConfig
+
+
+class Colors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+
+def colored_print(text, color):
+    print(f'{color}{text}{Colors.ENDC}')
 
 
 def set_seed(seed: int) -> None:
@@ -79,6 +98,10 @@ def setup(
     return device, local_rank, world_size
 
 
+def cleanup():
+    dist.destroy_process_group()
+
+
 def gaussian_kernel(size, sigma):
     """Creates a 1D Gaussian kernel using PyTorch."""
     size = int(size) // 2
@@ -96,10 +119,10 @@ def smooth_curve(points, sigma=2):
     points = torch.tensor(points, dtype=torch.float32)
     kernel = gaussian_kernel(kernel_size, sigma).unsqueeze(0)
     # Apply padding to handle borders
-    points_padded = torch.nn.functional.pad(
+    points_padded = F.pad(
         points, (kernel_size // 2, kernel_size // 2), mode='reflect'
     )
-    smoothed_points = torch.nn.functional.conv1d(
+    smoothed_points = F.conv1d(
         points_padded.unsqueeze(0).unsqueeze(0), kernel.unsqueeze(0)
     )
     return smoothed_points.squeeze().numpy()
@@ -193,8 +216,10 @@ def main() -> None:
     val_batch_size: int = (
         16 // world_size
     )  # scale batch size for distributed training
+    # num_epochs: int = 3
+    # eval_period: int = 30
     num_epochs: int = 3
-    eval_period: int = 30
+    eval_period: int = num_epochs * 10
     patience: int = 5
     checkpoint_dir: str = 'checkpoints'
 
@@ -206,7 +231,7 @@ def main() -> None:
     # STU hyperparameters
     d_model: int = 24
     d_target: int = 18
-    num_layers: int = 6
+    num_layers: int = 1
     dropout: float = 0.25
     input_len: int = 1000
     num_eigh: int = 24
@@ -216,14 +241,15 @@ def main() -> None:
     stu_lr: float = 7.5e-4
 
     # Transformer hyperparameters
-    n_layer: int = 6
-    n_head: int = 1
-    n_embd: int = 37
+    n_layer: int = 1
+    n_head: int = 8
+    n_embd: int = 24
     scale: int = 4
-    d_out: int = 29
+    d_out: int = 18
     max_len: int = 1_000
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     dropout: float = 0.25
+    use_dilated_attn: bool = False
     transformer_lr: float = 7.5e-4
 
     # Mamba hyperparameters
@@ -270,15 +296,14 @@ def main() -> None:
 
     models = {}
     experiments = {}
-    loss_fn = (
-        HalfCheetahLoss()
-        if controller == 'HalfCheetah-v1'
-        else Walker2DLoss()
-        if controller == 'Walker2D-v1'
-        else AntLoss()
-    )
+    loss_fn = {
+        'HalfCheetah-v1': HalfCheetahLoss,
+        'Walker2D-v1': Walker2DLoss,
+        'Ant-v1': AntLoss,
+    }[controller]()
 
     # Define the models based on flags
+    print(num_layers)
     if 'stu' in args.models:
         stu_configs = STUConfigs(
             d_model=d_model,
@@ -292,7 +317,7 @@ def main() -> None:
             learnable_m_y=learnable_m_y,
             loss_fn=loss_fn,
         )
-        stu_model = model.Architecture(stu_configs).to(device)
+        stu_model = Architecture(stu_configs).to(device)
 
         if world_size > 1:
             stu_model = DDP(
@@ -332,6 +357,7 @@ def main() -> None:
             max_len=max_len,
             bias=bias,
             dropout=dropout,
+            use_dilated_attn=use_dilated_attn,
             loss_fn=loss_fn,
         )
         transformer_model = Transformer(transformer_configs).to(device)
@@ -448,9 +474,13 @@ def main() -> None:
     }
 
     if main_process:
-        models = get_models(args.models)
         grmr = 'models' if len(args.models) > 1 else 'model'
-        msg = f"Lyla: We'll be training the {models} {grmr} on the {controller} task with"
+        models_str = (
+            ', '.join(args.models[:-1]) + f', and {args.models[-1]}'
+            if len(args.models) > 1
+            else args.models[0]
+        )
+        msg = f"Lyla: We'll be training the {models_str} {grmr} on the {controller} task with"
         if world_size > 1:
             print(
                 f'{msg} {device} on rank {rank + 1}/{world_size}'
@@ -459,29 +489,37 @@ def main() -> None:
         else:
             print(f'{msg} {device} today.')
 
-    # Prepare for training
-    pbar = (
-        tqdm(
-            range(num_epochs * len(train_loader)), desc='Training', unit='step'
+    # Prepare progress bars for training
+    pbars = {
+        model_name: tqdm(
+            range(num_epochs * len(train_loader)),
+            desc=f'Training {model_name}',
+            unit='step',
+            position=i,
         )
-        if main_process
-        else range(num_epochs * len(train_loader))
-    )
+        for i, model_name in enumerate(models)
+    }
+
+    # TODO: Check that setting this to True doesn't break distributed training.
     torch.autograd.set_detect_anomaly(True)
 
     # Training loop!
     for epoch in range(num_epochs):
         for step, (inputs, targets) in enumerate(train_loader):
-            for model_name in args.models:
-                model = models[model_name]
+            for model_name in models:
                 experiment = experiments[model_name]
+                train_metrics = experiment.step(inputs, targets)
 
-                if model_name == 'transformer':
-                    outputs, loss = model(inputs, targets)
-                    train_metrics = experiment.step(loss)
-                else:
-                    outputs = model(inputs)
-                    train_metrics = experiment.step(outputs, targets)
+                if dist.is_initialized():
+                    # Gather metrics from all processes
+                    gathered_metrics = [None] * world_size
+                    dist.all_gather_object(gathered_metrics, train_metrics)
+
+                    # Aggregate metrics across all processes
+                    train_metrics = {
+                        k: sum(d[k] for d in gathered_metrics) / world_size
+                        for k in train_metrics.keys()
+                    }
 
                 # Append the losses and metrics for each model
                 train_losses[model_name].append(train_metrics['loss'])
@@ -512,47 +550,46 @@ def main() -> None:
                             postfix_dict[f'{model_name}_{metric}'] = (
                                 train_metrics[metric]
                             )
-                    pbar.set_postfix(postfix_dict)
+                    pbars[model_name].set_postfix(postfix_dict)
 
-                if main_process:
-                    pbar.update(1)
+            if main_process:
+                for model_name in models:
+                    pbars[model_name].update(1)
 
             total_steps = epoch * len(train_loader) + step
+
+            if total_steps > 0 and total_steps % 10 == 0:
+                if main_process:
+                    colored_print(f'\nStep: {total_steps}', Colors.BOLD)
+                    for model_name in models:
+                        colored_print(
+                            f'{model_name} - Train Loss: {train_losses[model_name][-1]:.4f}',
+                            Colors.OKBLUE,
+                        )
 
             if total_steps > 0 and total_steps % eval_period == 0:
                 for model_name, experiment in experiments.items():
                     val_metrics = experiment.evaluate(val_loader)
+
+                    if dist.is_initialized():
+                        # Gather validation metrics from all processes
+                        gathered_metrics = [None] * world_size
+                        dist.all_gather_object(gathered_metrics, val_metrics)
+
+                        # Aggregate validation metrics across all processes
+                        val_metrics = {
+                            k: sum(d[k] for d in gathered_metrics) / world_size
+                            for k in val_metrics.keys()
+                        }
+
                     val_losses[model_name].append(val_metrics['loss'])
 
-                    if world_size > 1:
-                        # Gather evaluation metrics from all processes
-                        gathered_metrics = [None] * world_size
-                        torch.distributed.all_gather_object(
-                            gathered_metrics, val_metrics
+                    if main_process:
+                        colored_print(
+                            f'\nLyla: Evaluating the {model_name} model on step {total_steps} Loss: {val_metrics["loss"]:.2f}.',
+                            Colors.OKCYAN,
                         )
 
-                        if main_process:
-                            # Aggregate metrics across all processes
-                            total_loss = (
-                                sum(
-                                    metric['loss']
-                                    for metric in gathered_metrics
-                                )
-                                / world_size
-                            )
-                            print(
-                                f'\nLyla: Evaluating the {model_name} model on step {total_steps}'
-                                f' Average Loss: {total_loss:.4f}.'
-                            )
-                            val_metrics = {'loss': total_loss}
-                    else:
-                        if main_process:
-                            print(
-                                f'\nLyla: Evaluating the {model_name} model on step {total_steps}'
-                                f' Loss: {val_metrics["loss"]:.2f}.'
-                            )
-
-                    if main_process:
                         val_loss = val_metrics['loss']
                         if val_loss < best_val_losses[model_name]:
                             best_val_losses[model_name] = val_loss
@@ -565,32 +602,48 @@ def main() -> None:
                             )
                             best_checkpoints[model_name] = checkpoint_filename
 
-                            torch.save(
-                                models[model_name].state_dict(), checkpoint_path
-                            )
-                            print(
-                                f'Lyla: Wow! We have a new personal best for the {model_name} model at step {total_steps}.'
-                                f' The validation loss improved to: {val_loss:.4f}!'
-                                f' Checkpoint saved as {checkpoint_path}'
+                            if dist.is_initialized():
+                                # Save the model on the main process and broadcast it to all processes
+                                if main_process:
+                                    save_file(
+                                        models[model_name].module.state_dict(),
+                                        checkpoint_path,
+                                    )
+                                dist.barrier()
+                                map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+                                models[model_name].load_state_dict(
+                                    safetensors.load_file(
+                                        checkpoint_path, device=map_location
+                                    )
+                                )
+                            else:
+                                save_file(
+                                    models[model_name].state_dict(),
+                                    checkpoint_path,
+                                )
+
+                            colored_print(
+                                f'Lyla: Wow! We have a new personal best for the {model_name} model at step {total_steps}. The validation loss improved to: {val_loss:.4f}! Checkpoint saved as {checkpoint_path}',
+                                Colors.OKGREEN,
                             )
                         else:
                             patient_counters[model_name] += 1
-                            print(
-                                f'Lyla: No improvement in validation loss for the {model_name} model'
-                                f' for {patient_counters[model_name]} eval periods.'
-                                f' Current best loss: {best_val_losses[model_name]:.4f}.'
+                            colored_print(
+                                f'Lyla: No improvement in validation loss for the {model_name} model for {patient_counters[model_name]} eval periods. Current best loss: {best_val_losses[model_name]:.4f}.',
+                                Colors.WARNING,
                             )
 
-                        if patient_counters[model_name] >= patience:
-                            print(
-                                f'Lyla: We have reached the patience limit of {patience}'
-                                f' for the {model_name} model. Stopping the training early'
-                                f' at step {total_steps}...'
-                            )
-                            dist.barrier()
-                            return
+                            if patient_counters[model_name] >= patience:
+                                colored_print(
+                                    f'Lyla: We have reached the patience limit of {patience} for the {model_name} model. Stopping the training early at step {total_steps}...',
+                                    Colors.FAIL,
+                                )
+                                if dist.is_initialized():
+                                    dist.barrier()
+                                return
 
-    pbar.close()
+    for pbar in pbars.values():
+        pbar.close()
 
     if main_process:
         print('\nLyla: Training completed!')
@@ -598,7 +651,25 @@ def main() -> None:
             best_checkpoint_path = os.path.join(
                 checkpoint_dir, best_checkpoints[model_name]
             )
-            models[model_name].load_state_dict(torch.load(best_checkpoint_path))
+
+            if dist.is_initialized():
+                # Load the best checkpoint on the main process and broadcast it to all processes
+                if main_process:
+                    models[model_name].load_state_dict(
+                        safetensors.load_file(best_checkpoint_path)
+                    )
+                dist.barrier()
+                map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+                models[model_name].load_state_dict(
+                    safetensors.load_file(
+                        best_checkpoint_path, device=map_location
+                    )
+                )
+            else:
+                models[model_name].load_state_dict(
+                    safetensors.load_file(best_checkpoint_path)
+                )
+
             print(
                 f"\nLyla: Here's the best model information for the {model_name} model:"
             )
@@ -623,8 +694,7 @@ def main() -> None:
                     f'Best model checkpoint saved at: {best_checkpoint_path}\n'
                 )
             print(
-                f'Lyla: Congratulations on completing the training run for the {model_name} model!'
-                f' Details are saved in {training_details}.'
+                f'Lyla: Congratulations on completing the training run for the {model_name} model! Details are saved in {training_details}.'
             )
 
         print('Lyla: It was a pleasure assisting you. Until next time!')
@@ -641,7 +711,8 @@ def main() -> None:
                 eval_period,
             )
 
+
 if __name__ == '__main__':
     main()
     if dist.is_initialized():
-        dist.destroy_process_group()
+        cleanup()

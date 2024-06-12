@@ -55,6 +55,7 @@ class Experiment:
 
         self.optimizer.zero_grad()
         outputs = self.model(inputs)
+
         loss, metrics = self.loss_fn(outputs, targets)
         metrics['loss'] = loss.item()
         loss.backward()
@@ -96,7 +97,6 @@ class Experiment:
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
 
                 outputs = self.model(inputs)
-                print('outputs', outputs)
                 loss, _ = self.loss_fn(outputs, targets)
                 losses.append(loss.item())
 

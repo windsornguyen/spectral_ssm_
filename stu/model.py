@@ -41,7 +41,7 @@ class STU(nn.Module):
 
     def __init__(
         self,
-        d_out: int = 37,
+        d_out: int = 24,
         input_len: int = 1000,
         num_eigh: int = 24,
         auto_reg_k_u: int = 3,
@@ -80,38 +80,37 @@ class STU(nn.Module):
         self.m_phi = nn.Parameter(torch.zeros(self.d_out * self.k, self.d_out))
 
     def apply_stu(self, inputs):
-        start_time = time.time()  # Start timing
+        # start_time = time.time()  # Start timing
         eig_vals, eig_vecs = self.eigh
 
         x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs))
-        print(f'Time for x_tilde computation: {time.time() - start_time:.4f}s')
-        start_time = time.time()  # Reset timing
+        # print(f'Time for x_tilde computation: {time.time() - start_time:.4f}s')
+        # start_time = time.time()  # Reset timing
 
-        # delta_phi = x_tilde @ self.m_phi
-        delta_phi = torch.einsum('lk,kd->ld', x_tilde, self.m_phi)
-        print(
-            f'Time for delta_phi computation: {time.time() - start_time:.4f}s'
-        )
-        start_time = time.time()  # Reset timing
+        delta_phi = x_tilde @ self.m_phi
+        # print(
+        #     f'Time for delta_phi computation: {time.time() - start_time:.4f}s'
+        # )
+        # start_time = time.time()  # Reset timing
 
         delta_ar_u = stu_utils.compute_ar_x_preds(self.m_u, inputs)
-        print(
-            f'Time for delta_ar_u computation: {time.time() - start_time:.4f}s'
-        )
-        start_time = time.time()  # Reset timing
+        # print(
+        #     f'Time for delta_ar_u computation: {time.time() - start_time:.4f}s'
+        # )
+        # start_time = time.time()  # Reset timing
 
         y_t = stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u)
-        print(f'Time for y_t computation: {time.time() - start_time:.4f}s')
+        # print(f'Time for y_t computation: {time.time() - start_time:.4f}s')
 
         return y_t
 
     # TODO: Remove vmap and handle batch sizes manually
     def forward(self, inputs):
-        start_time = time.time()
+        # start_time = time.time()
         output = torch.vmap(self.apply_stu)(inputs)
-        print(
-            f'Total time for STU forward pass: {time.time() - start_time:.4f}s'
-        )
+        # print(
+        #     f'Total time for STU forward pass: {time.time() - start_time:.4f}s'
+        # )
         return output
 
 
@@ -155,28 +154,28 @@ class Architecture(nn.Module):
         self.projection = nn.Linear(self.d_model, self.d_target)
 
     def forward(self, inputs):
-        start_time = time.time()  # Start timing for the embedding operation
+        # start_time = time.time()  # Start timing for the embedding operation
         x = self.embedding(inputs)
-        embedding_time = time.time() - start_time
-        print(f'Time for embedding: {embedding_time:.4f}s')
+        # embedding_time = time.time() - start_time
+        # print(f'Time for embedding: {embedding_time:.4f}s')
 
-        total_layer_time = 0
+        # total_layer_time = 0
 
         for i, layer in enumerate(self.layers):
-            start_time = time.time()  # Start timing for each layer
+            # start_time = time.time()  # Start timing for each layer
             z = x
             x = layer(x)
             x = x + z
-            layer_time = time.time() - start_time
-            total_layer_time += layer_time
-            print(f'Time for layer {i}: {layer_time:.4f}s')
+            # layer_time = time.time() - start_time
+            # total_layer_time += layer_time
+            # print(f'Time for layer {i}: {layer_time:.4f}s')
 
-        print(f'Total time for all layers: {total_layer_time:.4f}s')
+        # print(f'Total time for all layers: {total_layer_time:.4f}s')
 
-        start_time = time.time()  # Start timing for the final projection
+        # start_time = time.time()  # Start timing for the final projection
         output = self.projection(x)
-        projection_time = time.time() - start_time
-        print(f'Time for final projection: {projection_time:.4f}s')
+        # projection_time = time.time() - start_time
+        # print(f'Time for final projection: {projection_time:.4f}s')
         return output
 
     def predict(

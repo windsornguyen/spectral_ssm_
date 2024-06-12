@@ -1,7 +1,7 @@
 # =============================================================================#
 # Authors: Tri Dao, Albert Gu, Windsor Nguyen
 # File: selective_state_update.py
-# Adapted from 
+# Adapted from
 # https://github.com/state-spaces/mamba/blob/main/mamba_ssm/ops/triton/k_activations.py
 # =============================================================================#
 
@@ -41,8 +41,8 @@ def _swiglu_fwd_kernel(
     Y += row * stride_y_row
     OUT += row * stride_out_row
     cols = start_col + tl.arange(0, BLOCK_N)
-    x = tl.load(X + cols, mask=cols < ncols, other=0.).to(tl.float32)
-    y = tl.load(Y + cols, mask=cols < ncols, other=0.).to(tl.float32)
+    x = tl.load(X + cols, mask=cols < ncols, other=0.0).to(tl.float32)
+    y = tl.load(Y + cols, mask=cols < ncols, other=0.0).to(tl.float32)
     out = x * tl.sigmoid(x) * y
     tl.store(OUT + cols, out, mask=cols < ncols)
 
@@ -62,7 +62,9 @@ def _swiglu_fwd(xy, out=None):
     M, N = x.shape
     grid = lambda META: (M, triton.cdiv(N, META['BLOCK_N']))
     with torch.cuda.device(x.device.index):
-        _swiglu_fwd_kernel[grid](x, y, out, x.stride(0), y.stride(0), out.stride(0), N)
+        _swiglu_fwd_kernel[grid](
+            x, y, out, x.stride(0), y.stride(0), out.stride(0), N
+        )
     return out.reshape(*batch_shape, out.shape[-1])
 
 
@@ -77,7 +79,7 @@ def _swiglu_fwd(xy, out=None):
     ],
     key=['ncols'],
 )
-@triton.heuristics({"RECOMPUTE_OUTPUT": lambda args: args["OUT"] is not None})
+@triton.heuristics({'RECOMPUTE_OUTPUT': lambda args: args['OUT'] is not None})
 @triton.jit
 def _swiglu_bwd_kernel(
     X,
@@ -107,9 +109,9 @@ def _swiglu_bwd_kernel(
     DX += row * stride_dx_row
     DY += row * stride_dy_row
     cols = start_col + tl.arange(0, BLOCK_N)
-    x = tl.load(X + cols, mask=cols < ncols, other=0.).to(tl.float32)
-    y = tl.load(Y + cols, mask=cols < ncols, other=0.).to(tl.float32)
-    dout = tl.load(DOUT + cols, mask=cols < ncols, other=0.).to(tl.float32)
+    x = tl.load(X + cols, mask=cols < ncols, other=0.0).to(tl.float32)
+    y = tl.load(Y + cols, mask=cols < ncols, other=0.0).to(tl.float32)
+    dout = tl.load(DOUT + cols, mask=cols < ncols, other=0.0).to(tl.float32)
     x_sigmoid = tl.sigmoid(x)
     dx = x_sigmoid * (1 + x * (1 - x_sigmoid)) * y * dout
     dy = x * x_sigmoid * dout
@@ -148,12 +150,24 @@ def _swiglu_bwd(xy, dout, dxy=None, recompute_output=False, out=None):
     M, N = x.shape
     grid = lambda META: (M, triton.cdiv(N, META['BLOCK_N']))
     with torch.cuda.device(x.device.index):
-        _swiglu_bwd_kernel[grid](x, y, dout, out if recompute_output else None, dx, dy,
-                                 x.stride(0), y.stride(0), dout.stride(0),
-                                 out.stride(0) if recompute_output else 0,
-                                 dx.stride(0), dy.stride(0),
-                                 N)
+        _swiglu_bwd_kernel[grid](
+            x,
+            y,
+            dout,
+            out if recompute_output else None,
+            dx,
+            dy,
+            x.stride(0),
+            y.stride(0),
+            dout.stride(0),
+            out.stride(0) if recompute_output else 0,
+            dx.stride(0),
+            dy.stride(0),
+            N,
+        )
     if not recompute_output:
         return dxy.reshape(*batch_shape, dxy.shape[-1])
     else:
-        return dxy.reshape(*batch_shape, dxy.shape[-1]), out.reshape(*batch_shape, out.shape[-1])
+        return dxy.reshape(*batch_shape, dxy.shape[-1]), out.reshape(
+            *batch_shape, out.shape[-1]
+        )
