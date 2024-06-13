@@ -14,10 +14,11 @@ from socket import gethostname
 import matplotlib.pyplot as plt
 import numpy as np
 import safetensors
-from safetensors.torch import save_file
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
+from safetensors.torch import save_file
+from safetensors import safe_open
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
@@ -112,33 +113,31 @@ def gaussian_kernel(size, sigma):
 
 
 def smooth_curve(points, sigma=2):
-    """Applies 1D Gaussian smoothing on a list of points."""
+    """Applies 1D Gaussian smoothing on a list of points using PyTorch."""
     kernel_size = int(
         4 * sigma + 1
     )  # Kernel size, covering +/- 4 standard deviations
     points = torch.tensor(points, dtype=torch.float32)
-    kernel = gaussian_kernel(kernel_size, sigma).unsqueeze(0)
-    # Apply padding to handle borders
+    kernel = gaussian_kernel(kernel_size, sigma).unsqueeze(0).unsqueeze(0)
     points_padded = F.pad(
-        points, (kernel_size // 2, kernel_size // 2), mode='reflect'
+        points.unsqueeze(0).unsqueeze(0),
+        (kernel_size // 2, kernel_size // 2),
+        mode='reflect',
     )
-    smoothed_points = F.conv1d(
-        points_padded.unsqueeze(0).unsqueeze(0), kernel.unsqueeze(0)
-    )
+    smoothed_points = F.conv1d(points_padded, kernel)
     return smoothed_points.squeeze().numpy()
 
 
-def plot_losses(losses, title, eval_interval=None, ylabel='Loss'):
-    """Plots smoothed loss curve."""
-    if eval_interval:
-        x_values = [i * eval_interval for i in range(len(losses))]
+def plot_losses(losses, title, eval_period=None, ylabel='Loss'):
+    """Plots smoothed loss curve using PyTorch."""
+    if eval_period:
+        x_values = [i * eval_period for i in range(len(losses))]
     else:
         x_values = list(range(len(losses)))
     plt.plot(x_values, smooth_curve(losses, sigma=2), label=title)
     plt.xlabel('Steps')
     plt.ylabel(ylabel)
     plt.legend()
-    plt.show()
 
 
 def plot_metrics(
@@ -148,8 +147,9 @@ def plot_metrics(
     grad_norms,
     output_dir,
     controller,
-    eval_interval,
+    eval_period,
 ):
+    """Plots training and validation losses, other metric losses, and gradient norms using PyTorch."""
     plt.style.use('seaborn-v0_8-whitegrid')
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -157,11 +157,10 @@ def plot_metrics(
     # Plot training and validation losses (main losses - losses.png)
     plt.figure(figsize=(10, 5))
     plot_losses(train_losses, 'Training Loss')
-    plot_losses(val_losses, 'Validation Loss', eval_interval)
+    plot_losses(val_losses, 'Validation Loss', eval_period)
     plt.title(f'Training and Validation Losses on {controller} Task')
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f'{controller}_losses.png'), dpi=300)
-    plt.show()
     plt.close()
 
     # Plot other losses (other losses - details.png)
@@ -172,15 +171,7 @@ def plot_metrics(
     plt.title(f'Other Losses, Gradient Norm Over Time on {controller} Task')
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f'{controller}_details.png'), dpi=300)
-    plt.show()
     plt.close()
-
-
-def get_models(models):
-    if len(models) == 1:
-        return models[0]
-    else:
-        return ', '.join(models[:-1]) + f', and {models[-1]}'
 
 
 # To run the script: `torchrun --nproc_per_node=1 train.py`
@@ -216,11 +207,9 @@ def main() -> None:
     val_batch_size: int = (
         16 // world_size
     )  # scale batch size for distributed training
-    # num_epochs: int = 3
-    # eval_period: int = 30
     num_epochs: int = 3
-    eval_period: int = num_epochs * 10
-    patience: int = 5
+    eval_period: int = 30
+    patience: int = 10
     checkpoint_dir: str = 'checkpoints'
 
     # Optimizer hyperparameters
@@ -229,8 +218,8 @@ def main() -> None:
     m_y_weight_decay: float = 0
 
     # STU hyperparameters
-    d_model: int = 24
-    d_target: int = 18
+    d_model: int = 37
+    d_target: int = 29
     num_layers: int = 1
     dropout: float = 0.25
     input_len: int = 1000
@@ -242,10 +231,10 @@ def main() -> None:
 
     # Transformer hyperparameters
     n_layer: int = 1
-    n_head: int = 8
-    n_embd: int = 24
+    n_head: int = 1
+    n_embd: int = 37
     scale: int = 4
-    d_out: int = 18
+    d_out: int = 29
     max_len: int = 1_000
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     dropout: float = 0.25
@@ -264,11 +253,11 @@ def main() -> None:
         if not os.path.exists('plots/'):
             os.makedirs('plots/')
 
-    controller = 'HalfCheetah-v1'
-    train_inputs = f'data/{controller}/3000/train_inputs.npy'
-    train_targets = f'data/{controller}/3000/train_targets.npy'
-    val_inputs = f'data/{controller}/3000/val_inputs.npy'
-    val_targets = f'data/{controller}/3000/val_targets.npy'
+    controller = 'Ant-v1'
+    train_inputs = f'data/{controller}/test_inputs.npy'
+    train_targets = f'data/{controller}/test_targets.npy'
+    val_inputs = f'data/{controller}/val_inputs.npy'
+    val_targets = f'data/{controller}/val_targets.npy'
 
     # Get dataloaders
     train_loader = physics_data.get_dataloader(
@@ -303,7 +292,6 @@ def main() -> None:
     }[controller]()
 
     # Define the models based on flags
-    print(num_layers)
     if 'stu' in args.models:
         stu_configs = STUConfigs(
             d_model=d_model,
@@ -646,70 +634,94 @@ def main() -> None:
         pbar.close()
 
     if main_process:
-        print('\nLyla: Training completed!')
         for model_name in args.models:
-            best_checkpoint_path = os.path.join(
-                checkpoint_dir, best_checkpoints[model_name]
-            )
+            if model_name in best_checkpoints:
+                best_checkpoint_path = os.path.join(
+                    checkpoint_dir, best_checkpoints[model_name]
+                )
 
-            if dist.is_initialized():
-                # Load the best checkpoint on the main process and broadcast it to all processes
-                if main_process:
-                    models[model_name].load_state_dict(
-                        safetensors.load_file(best_checkpoint_path)
+                if dist.is_initialized():
+                    # Load the best checkpoint on the main process and broadcast it to all processes
+                    if main_process:
+                        with safe_open(
+                            best_checkpoint_path, framework='pt', device=rank
+                        ) as f:
+                            state_dict = {k: f.get_tensor(k) for k in f.keys()}
+                            models[model_name].load_state_dict(state_dict)
+                    dist.barrier()
+                else:
+                    with safe_open(
+                        best_checkpoint_path, framework='pt', device='cpu'
+                    ) as f:
+                        state_dict = {k: f.get_tensor(k) for k in f.keys()}
+                        models[model_name].load_state_dict(state_dict)
+
+                print(
+                    f"\nLyla: Here's the best model information for the {model_name} model:"
+                )
+                print(f'    Best model at step {best_model_step[model_name]}')
+                print(
+                    f'    Best model validation loss: {best_val_losses[model_name]:.4f}'
+                )
+                print(
+                    f'    Best model checkpoint saved at: {best_checkpoint_path}'
+                )
+
+                # Save the training details to a file
+                timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+                training_details = (
+                    f'training_details_{model_name}_{timestamp}.txt'
+                )
+                with open(training_details, 'w') as f:
+                    f.write(
+                        f'Training completed for {model_name} on {controller} at: {datetime.now()}\n'
                     )
-                dist.barrier()
-                map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-                models[model_name].load_state_dict(
-                    safetensors.load_file(
-                        best_checkpoint_path, device=map_location
+                    f.write(f'Best model step: {best_model_step[model_name]}\n')
+                    f.write(
+                        f'Best model validation loss: {best_val_losses[model_name]:.4f}\n'
                     )
+                    f.write(
+                        f'Best model checkpoint saved at: {best_checkpoint_path}\n'
+                    )
+                print(
+                    f'Lyla: Congratulations on completing the training run for the {model_name} model! Details are saved in {training_details}.'
                 )
             else:
-                models[model_name].load_state_dict(
-                    safetensors.load_file(best_checkpoint_path)
+                print(
+                    f'\nLyla: No best checkpoint found for the {model_name} model. The model did not improve during training.'
                 )
 
-            print(
-                f"\nLyla: Here's the best model information for the {model_name} model:"
-            )
-            print(f'    Best model at step {best_model_step[model_name]}')
-            print(
-                f'    Best model validation loss: {best_val_losses[model_name]:.4f}'
-            )
-            print(f'    Best model checkpoint saved at: {best_checkpoint_path}')
+        for model_name in models:
+            if train_losses[model_name] and val_losses[model_name]:
+                plot_metrics(
+                    train_losses[model_name],
+                    val_losses[model_name],
+                    metric_losses[model_name],
+                    grad_norms[model_name],
+                    f'plots/{model_name}/',
+                    controller,
+                    eval_period,
+                )
+            else:
+                print(
+                    f'No training data available for plotting the {model_name} model.'
+                )
 
-            # Save the training details to a file
-            timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-            training_details = f'training_details_{model_name}_{timestamp}.txt'
-            with open(training_details, 'w') as f:
-                f.write(
-                    f'Training completed for {model_name} on {controller} at: {datetime.now()}\n'
-                )
-                f.write(f'Best model step: {best_model_step[model_name]}\n')
-                f.write(
-                    f'Best model validation loss: {best_val_losses[model_name]:.4f}\n'
-                )
-                f.write(
-                    f'Best model checkpoint saved at: {best_checkpoint_path}\n'
-                )
-            print(
-                f'Lyla: Congratulations on completing the training run for the {model_name} model! Details are saved in {training_details}.'
-            )
+        # Plot validation losses for all models
+        plt.figure(figsize=(8, 4))
+        for model_name in models:
+            if val_losses[model_name]:
+                plot_losses(val_losses[model_name], model_name, eval_period)
+        plt.xlabel('Steps', fontsize=12)
+        plt.ylabel('Validation Loss', fontsize=12)
+        plt.title(f'Validation Losses for All Models on {controller} Task', fontsize=14)
+        plt.grid(True, linestyle='--', alpha=0.7)
+        plt.legend(fontsize=10)
+        plt.tight_layout()
+        plt.savefig(os.path.join('plots', f'{controller}_losses.png'), dpi=300)
+        plt.close()
 
         print('Lyla: It was a pleasure assisting you. Until next time!')
-
-    if main_process:
-        for model_name in args.models:
-            plot_metrics(
-                train_losses[model_name],
-                val_losses[model_name],
-                metric_losses[model_name],
-                grad_norms[model_name],
-                f'plots/{model_name}/',
-                controller,
-                eval_period,
-            )
 
 
 if __name__ == '__main__':
