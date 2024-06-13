@@ -154,48 +154,79 @@ def compute_y_t_stack(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     # stack states and transitions to have a bona fide LDS. state is of dimension `k * d_out`
     # transition matrix has (a permuted) m_y in the first row, and identity on the -1 off-diagonal
     # Extract the dimensions from the input tensors
+    
+    # _, k, d = m_y.shape
+    # L, _ = deltas.shape
+
+    # # Get the device of the input tensor m_y
+    # device = m_y.device
+
+    # # Create an identity matrix of size ((k - 1) * d, (k - 1) * d) on the specified device
+    # identity_matrix = torch.eye((k - 1) * d, device=device)
+
+    # # Create a zero matrix of size ((k - 1) * d, d) on the specified device
+    # zero_matrix = torch.zeros((k - 1) * d, d, device=device)
+
+    # # Concatenate the identity matrix and zero matrix along dimension 1
+    # identity = torch.cat([identity_matrix, zero_matrix], dim=1)
+
+    # # Reshape m_y to have dimensions [d, k * d]
+    # reshaped_M = m_y.reshape(d, k * d)
+
+    # # Concatenate the reshaped m_y and identity matrix along dimension 0
+    # A = torch.cat([reshaped_M.to(device), identity], dim=0)
+
+    # # Create a zero matrix of size [L, (k - 1) * d] on the specified device
+    # zero_matrix_X = torch.zeros(L, (k - 1) * d, device=device)
+
+    # # Concatenate the deltas and zero matrix along the last dimension
+    # X = torch.cat([deltas, zero_matrix_X], dim=-1)
+
+    # # Initialize y with the first row of X
+    # y = X[0]
+
+    # # Initialize a list to store the computed y values
+    # ys = [y[:d]]
+
+    # # Iterate over the remaining rows of X
+    # for i in range(1, L):
+    #     # Compute the next y value using matrix multiplication and addition
+    #     y = A @ y + X[i]
+
+    #     # Append the first d elements of y to the ys list
+    #     ys.append(y[:d])
+
+    # # Stack the computed y values along a new dimension
+    # return torch.stack(ys)
+    # Extract the dimensions from the input tensors
     _, k, d = m_y.shape
     L, _ = deltas.shape
 
     # Get the device of the input tensor m_y
     device = m_y.device
 
-    # Create an identity matrix of size ((k - 1) * d, (k - 1) * d) on the specified device
-    identity_matrix = torch.eye((k - 1) * d, device=device)
+    # Concatenate m_y reshaped as [d, k*d] with an identity matrix to form matrix A
+    A = torch.cat([
+        m_y.reshape(d, k * d).to(device),
+        torch.eye((k - 1) * d, k * d, device=device)  # Directly create the right size and shape
+    ], dim=0)
 
-    # Create a zero matrix of size ((k - 1) * d, d) on the specified device
-    zero_matrix = torch.zeros((k - 1) * d, d, device=device)
+    # Prepare input X with deltas followed by zeros for lower dimensions
+    X = torch.cat([
+        deltas,
+        torch.zeros(L, (k - 1) * d, device=device)
+    ], dim=1)
 
-    # Concatenate the identity matrix and zero matrix along dimension 1
-    identity = torch.cat([identity_matrix, zero_matrix], dim=1)
-
-    # Reshape m_y to have dimensions [d, k * d]
-    reshaped_M = m_y.reshape(d, k * d)
-
-    # Concatenate the reshaped m_y and identity matrix along dimension 0
-    A = torch.cat([reshaped_M.to(device), identity], dim=0)
-
-    # Create a zero matrix of size [L, (k - 1) * d] on the specified device
-    zero_matrix_X = torch.zeros(L, (k - 1) * d, device=device)
-
-    # Concatenate the deltas and zero matrix along the last dimension
-    X = torch.cat([deltas, zero_matrix_X], dim=-1)
-
-    # Initialize y with the first row of X
+    # Initialize y and storage for results
     y = X[0]
+    ys = [y[:d]]  # Store only the necessary part of y
 
-    # Initialize a list to store the computed y values
-    ys = [y[:d]]
-
-    # Iterate over the remaining rows of X
-    for i in range(1, L):
-        # Compute the next y value using matrix multiplication and addition
-        y = A @ y + X[i]
-
-        # Append the first d elements of y to the ys list
+    # Matrix-vector multiplication in a loop to update y
+    for x in X[1:]:
+        y = A @ y + x
         ys.append(y[:d])
 
-    # Stack the computed y values along a new dimension
+    # Convert list to tensor
     return torch.stack(ys)
 
 
@@ -214,19 +245,13 @@ def compute_y_t_torch(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     """
     d_out, k, _ = m_y.shape
     carry = torch.zeros((k, d_out), device=deltas.device)
-    ys = []
+    ys = torch.zeros((len(deltas), d_out), device=deltas.device)
 
-    for x in deltas:
-        output = torch.tensordot(m_y, carry, dims=2)
-        output = output + x
-        carry = torch.roll(carry, 1, dims=0)
-
-        # Avoid in-place operation by reconstructing the carry tensor
-        carry = torch.cat((output.unsqueeze(0), carry[1:]), dim=0)
-
-        ys.append(output.unsqueeze(0))
-
-    ys = torch.cat(ys, dim=0)
+    for i, x in enumerate(deltas):
+        output = torch.tensordot(m_y, carry, dims=2) + x
+        ys[i] = output
+        carry = torch.roll(carry, shifts=1, dims=0)
+        carry[0] = output
 
     return ys
 

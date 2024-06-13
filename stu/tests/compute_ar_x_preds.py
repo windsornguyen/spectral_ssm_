@@ -6,39 +6,53 @@ import time
 import functools
 import torch.autograd.profiler as profiler
 
-@torch.jit.script
 def compute_ar_x_preds_torch(
     w: torch.Tensor,
     x: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute the auto-regressive component of spectral SSM.
+    """
+    Compute the auto-regressive component of spectral SSM.
 
     Args:
-      w: An array of shape [d_out, d_in, k].
-      x: A single input sequence of shape [seq_len, d_in].
+        w (torch.Tensor): An array of shape [d_out, d_in, k].
+        x (torch.Tensor): A single input sequence of shape [bsz, l, d_in].
 
     Returns:
-      ar_x_preds: An output of shape [seq_len, d_out].
+        torch.Tensor: ar_x_preds: An output of shape [bsz, l, d_out].
     """
+    # bsz, l, d_in = x.shape
+    # d_out, _, k = w.shape
+
+    # # Contract over `d_in`
+    # o = torch.einsum('oik,bli->bklo', w, x)  # [bsz, k, l, d_out]
+
+    # # For each `i` in `k`, roll the `(l, d_out)` by `i` steps for each batch
+    # rolled_o = torch.stack([torch.roll(o[:, i], shifts=i, dims=1) for i in range(k)], dim=1)
+
+    # # Create a mask that zeros out nothing at `k=0`, the first `(l, d_out)` at
+    # # `k=1`, the first two `(l, dout)`s at `k=2`, etc.
+    # m = torch.triu(torch.ones((k, l), device=w.device))
+    # m = m.unsqueeze(-1).unsqueeze(0).expand(bsz, k, l, d_out)
+
+    # # Mask and sum along `k`
+    # return torch.sum(rolled_o * m, dim=1)
+    bsz, l, d_in = x.shape
     d_out, _, k = w.shape
-    seq_len = x.shape[0]
 
-    # Contract over `d_in` and roll using advanced indexing
-    o = torch.einsum('oik,li->klo', w, x)
+    # Contract over `d_in`
+    o = torch.einsum('oik,bli->bklo', w, x)  # [bsz, k, l, d_out]
 
-    # Generate indices for the rolling effect
-    arange_seq = torch.arange(seq_len, device=w.device).unsqueeze(0)
-    arange_k = torch.arange(k, device=w.device).unsqueeze(1)
-    shift_indices = (arange_seq + arange_k) % seq_len
+    # For each `i` in `k`, roll the `(l, d_out)` by `i` steps for each batch
+    rolled_o = torch.stack([torch.roll(o[:, i], shifts=i, dims=1) for i in range(k)], dim=1)
 
-    # Expand indices for batch
-    expanded_indices = shift_indices.unsqueeze(-1).expand(k, seq_len, d_out)
-    rolled_o = torch.gather(o, 1, expanded_indices)
+    # Create a mask that zeros out nothing at `k=0`, the first `(l, d_out)` at
+    # `k=1`, the first two `(l, dout)`s at `k=2`, etc.
+    m = torch.triu(torch.ones((k, l), device=w.device)).unsqueeze(-1)
 
-    # Apply the mask and sum along `k`
-    mask = torch.triu(torch.ones((k, seq_len), device=w.device)).unsqueeze(-1)
-    return (rolled_o * mask).sum(dim=0)
-
+    # Mask and sum along `k`
+    return torch.sum(rolled_o * m, dim=1)
+   
+    
 
 
 @jax.jit
@@ -46,45 +60,47 @@ def compute_ar_x_preds_jax(
     w: jnp.ndarray,
     x: jnp.ndarray,
 ) -> jnp.ndarray:
-    """Compute the auto-regressive component of spectral SSM.
-
+    """Compute the auto-regressive component of spectral SSM with batch size.
     Args:
         w: An array of shape [d_out, d_in, k].
-        x: A single input sequence of shape [l, d_in].
-
+        x: A batch of input sequences of shape [bsz, l, d_in].
     Returns:
-        ar_x_preds: An output of shape [l, d_out].
+        ar_x_preds: An output of shape [bsz, l, d_out].
     """
+    bsz, l, d_in = x.shape
     d_out, _, k = w.shape
-    l = x.shape[0]
 
     # Contract over `d_in`.
-    o = jnp.einsum('oik,li->klo', w, x)
+    o = jnp.einsum('oik,bli->bklo', w, x)
 
-    # For each `i` in `k`, roll the `(l, d_out)` by `i` steps.
-    o = jax.vmap(functools.partial(jnp.roll, axis=0))(o, jnp.arange(k))
-
+    # For each `i` in `k`, roll the `(l, d_out)` by `i` steps for each batch.
+    o = jax.vmap(lambda o_slice: jax.vmap(functools.partial(jnp.roll, axis=0))(o_slice, jnp.arange(k)))(o)
+    
     # Create a mask that zeros out nothing at `k=0`, the first `(l, d_out)` at
     # `k=1`, the first two `(l, dout)`s at `k=2`, etc.
     m = jnp.triu(jnp.ones((k, l)))
     m = jnp.expand_dims(m, axis=-1)
-    m = jnp.tile(m, (1, 1, d_out))
-
+    m = jnp.expand_dims(m, axis=0)  # Expand for the batch dimension
+    m = jnp.tile(m, (bsz, 1, 1, d_out))
+    
     # Mask and sum along `k`.
-    return jnp.sum(o * m, axis=0)
+    return jnp.sum(o * m, axis=1)
+
 
 # Set a seed
 np.random.seed(42)
+torch.manual_seed(42)
 
 # Prepare random data for testing
-d_out = np.random.randint(10, 100)
-k = np.random.randint(1, 10)
-seq_len = np.random.randint(100, 1000)
+bsz = np.random.randint(1, 16)
+d_out = np.random.randint(1, 37)
+k = np.random.randint(1, 24)
+seq_len = np.random.randint(1, 1000)
 print(f'Testing compute_ar_x_preds function for w of shape [{d_out}, {d_out}, {k}] and x of shape [{seq_len}, {d_out}].')
 
 # Create random input data
 w_np = np.random.rand(d_out, d_out, k).astype(np.float32)
-x_np = np.random.rand(seq_len, d_out).astype(np.float32)
+x_np = np.random.rand(bsz, seq_len, d_out).astype(np.float32)
 w_torch = torch.from_numpy(w_np)
 x_torch = torch.from_numpy(x_np)
 w_jax = jnp.array(w_np)

@@ -451,7 +451,7 @@ class Transformer(nn.Module):
 
         # Report the number of parameters
         print(
-            'Model parameter count (excluding positional embeddings): %.2fM'
+            'Transformer Model Parameter Count (excl. pos. emb.): %.2fM'
             % (self.get_num_params() / 1e6,)
         )
 

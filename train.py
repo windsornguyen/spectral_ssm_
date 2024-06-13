@@ -206,14 +206,14 @@ def main() -> None:
 
     # General training hyperparameters
     train_batch_size: int = (
-        16 // world_size
+        5 // world_size
     )  # scale batch size for distributed training
     val_batch_size: int = (
-        16 // world_size
+        5 // world_size
     )  # scale batch size for distributed training
     num_epochs: int = 3
     eval_period: int = 10
-    patience: int = 5
+    patience: int = 15
     checkpoint_dir: str = 'checkpoints'
 
     # Optimizer hyperparameters
@@ -222,8 +222,8 @@ def main() -> None:
     m_y_weight_decay: float = 0
 
     # STU hyperparameters
-    d_model: int = 37
-    d_target: int = 29
+    d_model: int = 24
+    d_target: int = 18
     num_layers: int = 6
     dropout: float = 0.25
     input_len: int = 1000
@@ -234,15 +234,15 @@ def main() -> None:
     stu_lr: float = 7.5e-4
 
     # Transformer hyperparameters
-    n_layer: int = 6
+    n_layer: int = 2
     n_head: int = 1
-    n_embd: int = 37
-    scale: int = 4
-    d_out: int = 29
+    n_embd: int = 24
+    scale: int = 16
+    d_out: int = 18
     max_len: int = 1_000
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     dropout: float = 0.25
-    use_dilated_attn: bool = False
+    use_dilated_attn: bool = False  # TODO: Finish up
     transformer_lr: float = 7.5e-4
 
     # Mamba hyperparameters
@@ -257,11 +257,11 @@ def main() -> None:
         if not os.path.exists('plots/'):
             os.makedirs('plots/')
 
-    controller = 'Ant-v1'
-    train_inputs = f'data/{controller}/yagiz_train_inputs.npy'
-    train_targets = f'data/{controller}/yagiz_train_targets.npy'
-    val_inputs = f'data/{controller}/yagiz_val_inputs.npy'
-    val_targets = f'data/{controller}/yagiz_val_targets.npy'
+    controller = 'Walker2D-v1'
+    train_inputs = f'data/{controller}/3000/train_inputs.npy'
+    train_targets = f'data/{controller}/3000/train_targets.npy'
+    val_inputs = f'data/{controller}/3000/val_inputs.npy'
+    val_targets = f'data/{controller}/3000/val_targets.npy'
 
     # Get dataloaders
     train_loader = physics_data.get_dataloader(
@@ -492,9 +492,6 @@ def main() -> None:
         for i, model_name in enumerate(models)
     }
 
-    # TODO: Check that setting this to True doesn't break distributed training.
-    torch.autograd.set_detect_anomaly(True)
-
     # Training loop!
     for _ in range(num_epochs):
         for step, (inputs, targets) in enumerate(train_loader):
@@ -627,6 +624,46 @@ def main() -> None:
                                     f'Lyla: We have reached the patience limit of {patience} for the {model_name} model. Stopping the training early at step {step}...',
                                     Colors.FAIL,
                                 )
+                                if main_process:
+                                    for model_name in models:
+                                        if train_losses[model_name] and val_losses[model_name]:
+                                            plot_metrics(
+                                                train_losses[model_name],
+                                                val_losses[model_name],
+                                                metric_losses[model_name],
+                                                grad_norms[model_name],
+                                                f'plots/{model_name}/',
+                                                controller,
+                                                eval_period,
+                                            )
+                                        else:
+                                            print(
+                                                f'No training data available for plotting the {model_name} model.'
+                                            )
+
+                                    # Plot validation losses for all models
+                                    if any(val_losses.values()):
+                                        plt.figure(figsize=(8, 4))
+                                        for model_name in models:
+                                            if val_losses[model_name]:
+                                                plot_losses(val_losses[model_name], model_name, eval_period)
+                                        plt.xlabel('Steps', fontsize=12)
+                                        plt.ylabel('Validation Loss', fontsize=12)
+                                        plt.title(
+                                            f'Validation Losses for All Models on {controller} Task',
+                                            fontsize=14,
+                                        )
+                                        plt.grid(True, linestyle='--', alpha=0.7)
+                                        plt.legend(fontsize=10)
+                                        plt.tight_layout()
+                                        plt.savefig(
+                                            os.path.join('plots', f'2L-{controller}_all_losses.png'),
+                                            dpi=300,
+                                        )
+                                        plt.close()
+                                    else:
+                                        print('No validation losses available for plotting.')
+
                                 if dist.is_initialized():
                                     dist.barrier()
                                 return
@@ -723,7 +760,10 @@ def main() -> None:
             plt.grid(True, linestyle='--', alpha=0.7)
             plt.legend(fontsize=10)
             plt.tight_layout()
-            plt.savefig(os.path.join('plots', f'{controller}_all_losses.png'), dpi=300)
+            plt.savefig(
+                os.path.join('plots', f'2L-{controller}_all_losses.png'),
+                dpi=300,
+            )
             plt.close()
         else:
             print('No validation losses available for plotting.')

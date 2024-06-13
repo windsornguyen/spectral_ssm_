@@ -81,6 +81,7 @@ class STU(nn.Module):
 
     def apply_stu(self, inputs):
         # start_time = time.time()  # Start timing
+        # batch_size = inputs.size(0)
         eig_vals, eig_vecs = self.eigh
 
         x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs))
@@ -88,17 +89,17 @@ class STU(nn.Module):
         # start_time = time.time()  # Reset timing
 
         delta_phi = x_tilde @ self.m_phi
+        # m_phi_batch = self.m_phi.unsqueeze(0).expand(batch_size, -1, -1)
+        # delta_phi = torch.bmm(x_tilde, m_phi_batch)
         # print(
         #     f'Time for delta_phi computation: {time.time() - start_time:.4f}s'
         # )
         # start_time = time.time()  # Reset timing
-
         delta_ar_u = stu_utils.compute_ar_x_preds(self.m_u, inputs)
         # print(
         #     f'Time for delta_ar_u computation: {time.time() - start_time:.4f}s'
         # )
         # start_time = time.time()  # Reset timing
-
         y_t = stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u)
         # print(f'Time for y_t computation: {time.time() - start_time:.4f}s')
 
@@ -107,7 +108,7 @@ class STU(nn.Module):
     # TODO: Remove vmap and handle batch sizes manually
     def forward(self, inputs):
         # start_time = time.time()
-        output = torch.vmap(self.apply_stu)(inputs)
+        output = self.apply_stu(inputs)
         # print(
         #     f'Total time for STU forward pass: {time.time() - start_time:.4f}s'
         # )
@@ -130,28 +131,45 @@ class Architecture(nn.Module):
         self.learnable_m_y = config.learnable_m_y
 
         self.embedding = nn.Linear(self.d_model, self.d_model)
-        self.layers = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.LayerNorm(self.d_model),
-                    STU(
-                        d_out=self.d_model,
-                        input_len=self.input_len,
-                        num_eigh=self.num_eigh,
-                        auto_reg_k_u=self.auto_reg_k_u,
-                        auto_reg_k_y=self.auto_reg_k_y,
-                        learnable_m_y=self.learnable_m_y,
-                    ),
-                    nn.GELU(),
-                    nn.Dropout(self.dropout),
-                    nn.Linear(self.d_model, 2 * self.d_model),
-                    nn.GLU(dim=-1),
-                    nn.Dropout(self.dropout),
-                )
-                for _ in range(self.num_layers)
-            ]
+        self.stu_layer = nn.Sequential(
+            nn.LayerNorm(self.d_model),
+            STU(
+                d_out=self.d_model,
+                input_len=self.input_len,
+                num_eigh=self.num_eigh,
+                auto_reg_k_u=self.auto_reg_k_u,
+                auto_reg_k_y=self.auto_reg_k_y,
+                learnable_m_y=self.learnable_m_y,
+            ),
+            nn.GELU(),
+            nn.Dropout(self.dropout),
+            nn.Linear(self.d_model, 2 * self.d_model),
+            nn.GLU(dim=-1),
+            nn.Dropout(self.dropout),
         )
         self.projection = nn.Linear(self.d_model, self.d_target)
+        # Report the number of parameters
+        print(
+            'STU Model Parameter Count: %.2fM'
+            % (self.get_num_params() / 1e6,)
+        )
+
+
+    def get_num_params(self, non_embedding=True):
+        """
+        Return the number of parameters in the model.
+        
+        Args:
+            non_embedding (bool, optional): 
+            Whether to exclude the positional embeddings (if applicable). 
+            Defaults to True.
+
+        Returns:
+            int: The number of parameters in the model.
+        """
+        n_params = sum(p.numel() for p in self.parameters())
+        return n_params
+
 
     def forward(self, inputs):
         # start_time = time.time()  # Start timing for the embedding operation
@@ -159,12 +177,12 @@ class Architecture(nn.Module):
         # embedding_time = time.time() - start_time
         # print(f'Time for embedding: {embedding_time:.4f}s')
 
-        # total_layer_time = 0
+        total_layer_time = 0
 
-        for i, layer in enumerate(self.layers):
+        for i in range(self.num_layers):
             # start_time = time.time()  # Start timing for each layer
             z = x
-            x = layer(x)
+            x = self.stu_layer(x)
             x = x + z
             # layer_time = time.time() - start_time
             # total_layer_time += layer_time
@@ -172,8 +190,8 @@ class Architecture(nn.Module):
 
         # print(f'Total time for all layers: {total_layer_time:.4f}s')
 
-        # start_time = time.time()  # Start timing for the final projection
-        
+        start_time = time.time()  # Start timing for the final projection
+
         output = self.projection(x)
         # projection_time = time.time() - start_time
         # print(f'Time for final projection: {projection_time:.4f}s')

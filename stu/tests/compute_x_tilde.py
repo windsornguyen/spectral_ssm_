@@ -14,23 +14,23 @@ def compute_x_tilde_torch(
     """Compute the x_tilde component of spectral SSM using PyTorch.
 
     Args:
-        inputs (torch.Tensor): A tensor of shape [seq_len, d_in].
+        inputs (torch.Tensor): A tensor of shape [bsz, seq_len, d_in].
         eigh (tuple[torch.Tensor, torch.Tensor]): A tuple of eigenvalues of shape [k,] and
             eigenvectors of shape [seq_len, k].
 
     Returns:
-        torch.Tensor: x_tilde: A tensor of shape [seq_len, k * d_in].
+        torch.Tensor: x_tilde: A tensor of shape [bsz, seq_len, k * d_in].
     """
     eig_vals, eig_vecs = eigh
-    seq_len = inputs.shape[0]
+    batch_size, seq_len, d_in = inputs.shape
 
     x_tilde = conv_torch(eig_vecs, inputs)
     x_tilde *= eig_vals.unsqueeze(0).unsqueeze(2) ** 0.25
 
     # This shift is introduced as the rest is handled by the AR part.
     # NOTE: Shifting twice is incorrect, noted by Evan.
-    # return shift_torch(shift_torch(x_tilde.reshape((seq_len, -1))))
-    return x_tilde.reshape((seq_len, -1))
+    # return shift_torch(shift_torch(x_tilde.reshape((batch_size, seq_len, -1))))
+    return x_tilde.reshape((batch_size, seq_len, -1))
 
 
 @jax.jit
@@ -40,35 +40,36 @@ def compute_x_tilde_jax(
     """Compute the x_tilde component of spectral SSM using JAX.
 
     Args:
-        inputs (jnp.ndarray): A tensor of shape [seq_len, d_in].
+        inputs (jnp.ndarray): A tensor of shape [bsz, seq_len, d_in].
         eigh (tuple[jnp.ndarray, jnp.ndarray]): A tuple of eigenvalues of shape [k,] and
             eigenvectors of shape [seq_len, k].
 
     Returns:
-        jnp.ndarray: x_tilde: A tensor of shape [seq_len, k * d_in].
+        jnp.ndarray: x_tilde: A tensor of shape [bsz, seq_len, k * d_in].
     """
     eig_vals, eig_vecs = eigh
-    l = inputs.shape[0]
+    bsz, l, _ = inputs.shape
 
     x_tilde = conv_jax(eig_vecs, inputs)
     x_tilde *= jnp.expand_dims(eig_vals**0.25, axis=(0, 2))
     # NOTE: Shifting twice is incorrect as of now, noted by Evan.
     # return shift_jax(shift_jax(x_tilde.reshape((l, -1))))
-    return x_tilde.reshape((l, -1))
+    return x_tilde.reshape((bsz, l, -1))
 
 
 # Set a seed
 np.random.seed(42)
 
 # Prepare random data for testing
-seq_len = np.random.randint(100, 1000)
-d_out = np.random.randint(10, 100)
+batch_size = np.random.randint(1, 10)
+seq_len = np.random.randint(4, 32)
+d_out = np.random.randint(4, 32)
 print(
-    f'Testing compute_x_tilde function for inputs of shape [{seq_len}, {d_out}] and eig_vals/eig_vecs of shape [{d_out}].'
+    f'Testing compute_x_tilde function for inputs of shape [{batch_size}, {seq_len}, {d_out}] and eig_vals/eig_vecs of shape [{d_out}].'
 )
 
 # Create random input data
-inputs_np = np.random.rand(seq_len, d_out).astype(np.float32)
+inputs_np = np.random.rand(batch_size, seq_len, d_out).astype(np.float32)
 eig_vals_np = np.random.rand(d_out).astype(np.float32)
 eig_vecs_np = np.random.rand(seq_len, d_out).astype(
     np.float32

@@ -8,13 +8,15 @@
 import torch
 import torch.nn as nn
 
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 
-# TODO: Add mixed precision training (incompatible with torch.vmap it seems?)
 class Experiment:
-    """Initializes and maintains the experiment state."""
+    """
+    Initializes and maintains the experiment state.
+    """
 
     def __init__(
         self,
@@ -39,8 +41,11 @@ class Experiment:
         self.device = device
         self.model.to(self.device)
 
+        self.scaler = GradScaler()
 
-    def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> dict[str, float]:
+    def step(
+        self, inputs: torch.Tensor, targets: torch.Tensor
+    ) -> dict[str, float]:
         """
         Perform a single training step.
 
@@ -54,47 +59,57 @@ class Experiment:
         inputs, targets = inputs.to(self.device), targets.to(self.device)
 
         self.optimizer.zero_grad()
-        outputs = self.model(inputs)
 
-        loss, metrics = self.loss_fn(outputs, targets)
-        metrics['loss'] = loss.item()
-        loss.backward()
+        with autocast(device_type=self.device.type):
+            outputs = self.model(inputs)
+            loss, metrics = self.loss_fn(outputs, targets)
+            metrics['loss'] = loss.item()
+
+        self.scaler.scale(loss).backward()
 
         # Compute gradient norm to monitor vanishing/exploding gradients
         total_norm = 0
         for name, param in self.model.named_parameters():
             if param.grad is not None:
                 param_norm = param.grad.data.norm(2).item()
-                total_norm += param_norm ** 2
+                total_norm += param_norm**2
             else:
                 print(f'No gradient found: {name}')
-        total_norm = total_norm ** 0.5
+        total_norm = total_norm**0.5
         metrics['grad_norm'] = total_norm
 
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+
         if self.scheduler is not None:
             self.scheduler.step()
 
         return metrics
 
-
     def evaluate(self, dataloader: DataLoader) -> dict[str, float]:
         """Evaluate the model over an entire dataset.
 
         Args:
-            dataloader (DataLoader): 
+            dataloader (DataLoader):
               A DataLoader providing batches of data for evaluation.
 
         Returns:
-            Dict[str, float]: 
+            Dict[str, float]:
               A Dictionary of aggregated metrics over the dataset.
         """
         self.model.eval()
         losses = []
 
-        with torch.no_grad(), tqdm(total=len(dataloader), desc='Evaluating model...') as progress:
+        with (
+            torch.no_grad(),
+            autocast(device_type=self.device.type),
+            tqdm(total=len(dataloader), desc='Evaluating model...') as progress,
+        ):
             for inputs, targets in dataloader:
-                inputs, targets = inputs.to(self.device), targets.to(self.device)
+                inputs, targets = (
+                    inputs.to(self.device),
+                    targets.to(self.device),
+                )
 
                 outputs = self.model(inputs)
                 loss, _ = self.loss_fn(outputs, targets)
@@ -105,7 +120,9 @@ class Experiment:
         avg_loss = torch.tensor(losses).mean().item()
 
         if torch.distributed.is_initialized():
-            torch.distributed.all_reduce(torch.tensor(avg_loss, device=self.device))
+            torch.distributed.all_reduce(
+                torch.tensor(avg_loss, device=self.device)
+            )
             avg_loss /= torch.distributed.get_world_size()
 
         self.model.train()
