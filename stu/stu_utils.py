@@ -45,7 +45,6 @@ def get_top_hankel_eigh(
     return eig_vals[-k:], eig_vecs[:, -k:] # -> ([k], [n, k])
 
 
-@torch.jit.script
 def get_random_real_matrix(
     shape: list[int],
     scaling: float,
@@ -178,7 +177,6 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     return ys
 
 
-@torch.jit.script
 def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     """Compute the auto-regressive component of spectral SSM.
 

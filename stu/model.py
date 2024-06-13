@@ -173,6 +173,7 @@ class Architecture(nn.Module):
         # print(f'Total time for all layers: {total_layer_time:.4f}s')
 
         # start_time = time.time()  # Start timing for the final projection
+        
         output = self.projection(x)
         # projection_time = time.time() - start_time
         # print(f'Time for final projection: {projection_time:.4f}s')

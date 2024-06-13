@@ -104,7 +104,7 @@ def cleanup():
 
 
 def gaussian_kernel(size, sigma):
-    """Creates a 1D Gaussian kernel using PyTorch."""
+    """Create a 1D Gaussian kernel."""
     size = int(size) // 2
     x = torch.arange(-size, size + 1, dtype=torch.float32)
     kernel = torch.exp(-0.5 * (x / sigma) ** 2)
@@ -114,10 +114,14 @@ def gaussian_kernel(size, sigma):
 
 def smooth_curve(points, sigma=2):
     """Applies 1D Gaussian smoothing on a list of points using PyTorch."""
-    kernel_size = int(
-        4 * sigma + 1
-    )  # Kernel size, covering +/- 4 standard deviations
+    kernel_size = int(4 * sigma + 1)  # Kernel size, covering +/- 4 stddevs
     points = torch.tensor(points, dtype=torch.float32)
+
+    if len(points) < kernel_size:
+        return (
+            points.numpy()
+        )  # Return original points if not enough for smoothing
+
     kernel = gaussian_kernel(kernel_size, sigma).unsqueeze(0).unsqueeze(0)
     points_padded = F.pad(
         points.unsqueeze(0).unsqueeze(0),
@@ -208,8 +212,8 @@ def main() -> None:
         16 // world_size
     )  # scale batch size for distributed training
     num_epochs: int = 3
-    eval_period: int = 30
-    patience: int = 10
+    eval_period: int = 10
+    patience: int = 5
     checkpoint_dir: str = 'checkpoints'
 
     # Optimizer hyperparameters
@@ -220,7 +224,7 @@ def main() -> None:
     # STU hyperparameters
     d_model: int = 37
     d_target: int = 29
-    num_layers: int = 1
+    num_layers: int = 6
     dropout: float = 0.25
     input_len: int = 1000
     num_eigh: int = 24
@@ -230,7 +234,7 @@ def main() -> None:
     stu_lr: float = 7.5e-4
 
     # Transformer hyperparameters
-    n_layer: int = 1
+    n_layer: int = 6
     n_head: int = 1
     n_embd: int = 37
     scale: int = 4
@@ -254,10 +258,10 @@ def main() -> None:
             os.makedirs('plots/')
 
     controller = 'Ant-v1'
-    train_inputs = f'data/{controller}/test_inputs.npy'
-    train_targets = f'data/{controller}/test_targets.npy'
-    val_inputs = f'data/{controller}/val_inputs.npy'
-    val_targets = f'data/{controller}/val_targets.npy'
+    train_inputs = f'data/{controller}/yagiz_train_inputs.npy'
+    train_targets = f'data/{controller}/yagiz_train_targets.npy'
+    val_inputs = f'data/{controller}/yagiz_val_inputs.npy'
+    val_targets = f'data/{controller}/yagiz_val_targets.npy'
 
     # Get dataloaders
     train_loader = physics_data.get_dataloader(
@@ -492,7 +496,7 @@ def main() -> None:
     torch.autograd.set_detect_anomaly(True)
 
     # Training loop!
-    for epoch in range(num_epochs):
+    for _ in range(num_epochs):
         for step, (inputs, targets) in enumerate(train_loader):
             for model_name in models:
                 experiment = experiments[model_name]
@@ -544,18 +548,15 @@ def main() -> None:
                 for model_name in models:
                     pbars[model_name].update(1)
 
-            total_steps = epoch * len(train_loader) + step
-
-            if total_steps > 0 and total_steps % 10 == 0:
+            if step > 0 and step % eval_period == 0:
                 if main_process:
-                    colored_print(f'\nStep: {total_steps}', Colors.BOLD)
+                    colored_print(f'\nStep: {step}', Colors.BOLD)
                     for model_name in models:
                         colored_print(
                             f'{model_name} - Train Loss: {train_losses[model_name][-1]:.4f}',
                             Colors.OKBLUE,
                         )
 
-            if total_steps > 0 and total_steps % eval_period == 0:
                 for model_name, experiment in experiments.items():
                     val_metrics = experiment.evaluate(val_loader)
 
@@ -574,17 +575,17 @@ def main() -> None:
 
                     if main_process:
                         colored_print(
-                            f'\nLyla: Evaluating the {model_name} model on step {total_steps} Loss: {val_metrics["loss"]:.2f}.',
+                            f'\nLyla: Evaluating the {model_name} model on step {step} Loss: {val_metrics["loss"]:.2f}.',
                             Colors.OKCYAN,
                         )
 
                         val_loss = val_metrics['loss']
                         if val_loss < best_val_losses[model_name]:
                             best_val_losses[model_name] = val_loss
-                            best_model_step[model_name] = total_steps
+                            best_model_step[model_name] = step
                             patient_counters[model_name] = 0
                             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-                            checkpoint_filename = f'{model_name}-{controller}-chkpt-step{total_steps}-{timestamp}.safetensors'
+                            checkpoint_filename = f'{model_name}-{controller}-chkpt-step{step}-{timestamp}.safetensors'
                             checkpoint_path = os.path.join(
                                 checkpoint_dir, checkpoint_filename
                             )
@@ -611,7 +612,7 @@ def main() -> None:
                                 )
 
                             colored_print(
-                                f'Lyla: Wow! We have a new personal best for the {model_name} model at step {total_steps}. The validation loss improved to: {val_loss:.4f}! Checkpoint saved as {checkpoint_path}',
+                                f'Lyla: Wow! We have a new personal best for the {model_name} model at step {step}. The validation loss improved to: {val_loss:.4f}! Checkpoint saved as {checkpoint_path}',
                                 Colors.OKGREEN,
                             )
                         else:
@@ -623,7 +624,7 @@ def main() -> None:
 
                             if patient_counters[model_name] >= patience:
                                 colored_print(
-                                    f'Lyla: We have reached the patience limit of {patience} for the {model_name} model. Stopping the training early at step {total_steps}...',
+                                    f'Lyla: We have reached the patience limit of {patience} for the {model_name} model. Stopping the training early at step {step}...',
                                     Colors.FAIL,
                                 )
                                 if dist.is_initialized():
@@ -708,18 +709,24 @@ def main() -> None:
                 )
 
         # Plot validation losses for all models
-        plt.figure(figsize=(8, 4))
-        for model_name in models:
-            if val_losses[model_name]:
-                plot_losses(val_losses[model_name], model_name, eval_period)
-        plt.xlabel('Steps', fontsize=12)
-        plt.ylabel('Validation Loss', fontsize=12)
-        plt.title(f'Validation Losses for All Models on {controller} Task', fontsize=14)
-        plt.grid(True, linestyle='--', alpha=0.7)
-        plt.legend(fontsize=10)
-        plt.tight_layout()
-        plt.savefig(os.path.join('plots', f'{controller}_losses.png'), dpi=300)
-        plt.close()
+        if any(val_losses.values()):
+            plt.figure(figsize=(8, 4))
+            for model_name in models:
+                if val_losses[model_name]:
+                    plot_losses(val_losses[model_name], model_name, eval_period)
+            plt.xlabel('Steps', fontsize=12)
+            plt.ylabel('Validation Loss', fontsize=12)
+            plt.title(
+                f'Validation Losses for All Models on {controller} Task',
+                fontsize=14,
+            )
+            plt.grid(True, linestyle='--', alpha=0.7)
+            plt.legend(fontsize=10)
+            plt.tight_layout()
+            plt.savefig(os.path.join('plots', f'{controller}_all_losses.png'), dpi=300)
+            plt.close()
+        else:
+            print('No validation losses available for plotting.')
 
         print('Lyla: It was a pleasure assisting you. Until next time!')
 
