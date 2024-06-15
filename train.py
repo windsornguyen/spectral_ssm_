@@ -13,7 +13,7 @@ from socket import gethostname
 
 import matplotlib.pyplot as plt
 import numpy as np
-import safetensors
+import safetensors # TODO: Replace this with safetensors.torch and change fns accordingly
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
@@ -25,10 +25,10 @@ from tqdm import tqdm
 from losses.loss_ant import AntLoss
 from losses.loss_cheetah import HalfCheetahLoss
 from losses.loss_walker import Walker2DLoss
+from data.physics import physics_data
 from stu import experiment as exp, optimizer as opt
 from stu.model import STUConfigs, Architecture
-from stu.physics import physics_data
-from transformer.model import Transformer, TransformerConfigs
+from models.transformer.model import Transformer, TransformerConfigs
 # from mamba.model import Mamba, MambaConfig
 # from jamba.model import Jamba, JambaConfig
 
@@ -171,6 +171,8 @@ def plot_metrics(
     plt.figure(figsize=(10, 5))
     for metric, losses in metric_losses.items():
         plot_losses(losses, metric)
+
+    # TODO: Since we use AMP, prune out super high grad norms at the start
     plot_losses(grad_norms, 'Gradient Norm', ylabel='Gradient Norm')
     plt.title(f'Other Losses, Gradient Norm Over Time on {controller} Task')
     plt.tight_layout()
@@ -212,7 +214,7 @@ def main() -> None:
         5 // world_size
     )  # scale batch size for distributed training
     num_epochs: int = 3
-    eval_period: int = 10
+    eval_period: int = 25
     patience: int = 15
     checkpoint_dir: str = 'checkpoints'
 
@@ -494,7 +496,7 @@ def main() -> None:
 
     # Training loop!
     for _ in range(num_epochs):
-        for step, (inputs, targets) in enumerate(train_loader):
+        for step, (inputs, targets) in enumerate(train_loader): 
             for model_name in models:
                 experiment = experiments[model_name]
                 train_metrics = experiment.step(inputs, targets)

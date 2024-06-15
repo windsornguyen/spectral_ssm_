@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from spectral_ssm import model
 import safetensors
 
+# TODO: Clean up the locations of various predict.py files.
 def main():
     # Load the trained model
     model_path = 'checkpoints/best_model.safetensors'

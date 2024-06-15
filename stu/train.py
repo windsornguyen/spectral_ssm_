@@ -562,7 +562,7 @@ def main() -> None:
                 val_losses[model_name],
                 metric_losses[model_name],
                 grad_norms[model_name],
-                f'plots/{model_name}/',
+                f'plots/{model_name}/', # TODO: Change this to a more centralized location
                 controller,
                 eval_period,
             )

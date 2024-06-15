@@ -25,7 +25,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from einops import rearrange
 from tqdm import tqdm
-from transformer.utils import padding_to_multiple_of, all_gather_func, get_data_parallel_rank, get_data_parallel_world_size
+from models.transformer.utils import padding_to_multiple_of, all_gather_func, get_data_parallel_rank, get_data_parallel_world_size
 from dataclasses import dataclass
 
 

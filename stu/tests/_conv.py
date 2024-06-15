@@ -48,16 +48,17 @@ import time
 import torch.nn.functional as F
 
 # Ensure PyTorch uses CUDA if available
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 
 def tr_conv_fft(x, y):
     """
     Perform convolution using FFT in PyTorch.
-    
+
     Args:
         x (torch.Tensor): Input tensor of shape (seq_len,).
         y (torch.Tensor): Input tensor of shape (seq_len,).
-    
+
     Returns:
         torch.Tensor: Convolution result of shape (seq_len,).
     """
@@ -66,16 +67,17 @@ def tr_conv_fft(x, y):
     Y = torch.fft.rfft(y, n=n)
     Z = X * Y
     z = torch.fft.irfft(Z, n=n)
-    return z[:x.shape[0]]
+    return z[: x.shape[0]]
+
 
 def tr_conv_direct(x, y):
     """
     Perform convolution using direct method in PyTorch.
-    
+
     Args:
         x (torch.Tensor): Input tensor of shape (seq_len,).
         y (torch.Tensor): Input tensor of shape (seq_len,).
-    
+
     Returns:
         torch.Tensor: Convolution result of shape (seq_len,).
     """
@@ -90,9 +92,9 @@ def tr_conv_direct(x, y):
 
     # Inverse FFT to return to the time domain
     output = torch.fft.irfft(output_fft, n=n)
-    
+
     # Truncate to the original sequence length
-    return output[:x.shape[0]]
+    return output[: x.shape[0]]
 
 
 def tr_conv_old(v, u):
@@ -101,13 +103,15 @@ def tr_conv_old(v, u):
 
     # Calculate the sequence length and determine the target tensor
     seq_len = max(v.size(0), u.size(0))
-    target_tensor = torch.tensor(2 * seq_len - 1, device=device, dtype=torch.float32)
+    target_tensor = torch.tensor(
+        2 * seq_len - 1, device=device, dtype=torch.float32
+    )
 
     # Calculate the ceiling of the log base 2 of the target tensor
     ceil_log_base_2 = torch.ceil(torch.log2(target_tensor))
 
     # Calculate the padded length as the next power of two
-    padded_len = int(2 ** ceil_log_base_2)
+    padded_len = int(2**ceil_log_base_2)
 
     # Padding for FFT efficiency (lengths that are powers of two perform best)
     v_padded = F.pad(v, (0, padded_len - seq_len))
@@ -122,22 +126,24 @@ def tr_conv_old(v, u):
 
     # Inverse FFT to return to the time domain
     output = torch.fft.irfft(output_fft, n=padded_len)
-    
+
     # Truncate to the original sequence length
     return output[:seq_len]
+
 
 def jax_tr_conv(x, y):
     """
     Perform convolution using FFT in JAX.
-    
+
     Args:
         x (numpy.ndarray): Input array of shape (seq_len,).
         y (numpy.ndarray): Input array of shape (seq_len,).
-    
+
     Returns:
         numpy.ndarray: Convolution result of shape (seq_len,).
     """
-    return jax_convolve(x, y, method='fft')[:x.shape[0]]
+    return jax_convolve(x, y, method='fft')[: x.shape[0]]
+
 
 def run_benchmarks(seq_len=8012, num_runs=100):
     """
@@ -185,10 +191,10 @@ def run_benchmarks(seq_len=8012, num_runs=100):
     for name, func in methods.items():
         result_py = func(x, y).cpu().numpy()
         if not np.allclose(result_ref, result_py, atol=1e-4):
-            print(f"{name} failed accuracy check.")
-            print(f"Reference result: {result_ref}")
-            print(f"{name} result: {result_py}")
-            print(f"Difference: {np.abs(result_ref - result_py)}")
+            print(f'{name} failed accuracy check.')
+            print(f'Reference result: {result_ref}')
+            print(f'{name} result: {result_py}')
+            print(f'Difference: {np.abs(result_ref - result_py)}')
             print()
 
     # Calculate mean and standard deviation of timings
@@ -199,7 +205,8 @@ def run_benchmarks(seq_len=8012, num_runs=100):
     ranked_methods = sorted(mean_times.items(), key=lambda x: x[1])
     for rank, (name, mean_time) in enumerate(ranked_methods, start=1):
         std_time = std_times[name]
-        print(f"{rank}. {name}: {mean_time:.6f} ± {std_time:.6f} seconds")
+        print(f'{rank}. {name}: {mean_time:.6f} ± {std_time:.6f} seconds')
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     run_benchmarks()

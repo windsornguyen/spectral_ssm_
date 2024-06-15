@@ -1,6 +1,6 @@
 # ==============================================================================#
-# Authors:  Windsor Nguyen
+# Authors: Isabel Liu, Windsor Nguyen
 # File: __init__.py
 # ==============================================================================#
 
-"""Vanilla Spectral State Space Model."""
+"""Utilities for STU-based models."""

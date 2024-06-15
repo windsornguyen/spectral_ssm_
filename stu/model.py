@@ -24,11 +24,12 @@ class STUConfigs:
     auto_reg_k_u: int = 3
     auto_reg_k_y: int = 2
     learnable_m_y: bool = True
-    loss_fn: nn.Module = None  # TODO: Ideally should not be None by default?
+    loss_fn: nn.Module = nn.MSELoss()
 
 
 class STU(nn.Module):
-    """Simple STU Layer.
+    """
+    A simple STU (Spectral Transform Unit) Layer.
 
     Args:
         d_out (int): Output dimension.
@@ -60,24 +61,24 @@ class STU(nn.Module):
         self.auto_reg_k_u = auto_reg_k_u
         self.auto_reg_k_y = auto_reg_k_y
         self.learnable_m_y = learnable_m_y
-        self.m_x_var = 1.0 / (float(self.d_out) ** 0.5)
+        self.m_x = 1.0 / (float(self.d_out) ** 0.5)
 
-        if learnable_m_y:
-            self.m_y = nn.Parameter(
-                torch.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
-            )
-        else:
-            self.register_buffer(
-                'm_y', torch.zeros([self.d_out, self.auto_reg_k_y, self.d_out])
-            )
-
-        self.m_u = nn.Parameter(
-            stu_utils.get_random_real_matrix(
-                (self.d_out, self.d_out, self.auto_reg_k_u), self.m_x_var
-            )
+        m_y = torch.empty([self.d_out, self.auto_reg_k_y, self.d_out])
+        self.m_y = (
+            nn.Parameter(nn.init.xavier_normal_(m_y))
+            if learnable_m_y
+            else self.register_buffer('m_y', m_y)
         )
 
-        self.m_phi = nn.Parameter(torch.zeros(self.d_out * self.k, self.d_out))
+        # TODO: Also use Glorot initialization for m_u?
+        self.m_u = nn.Parameter(
+            stu_utils.get_random_real_matrix(
+                (self.d_out, self.d_out, self.auto_reg_k_u), self.m_x
+            )
+        )
+        m_phi = torch.empty([self.d_out * self.k, self.d_out])
+        self.m_phi = nn.Parameter(nn.init.xavier_normal_(m_phi))
+
 
     def apply_stu(self, inputs):
         # start_time = time.time()  # Start timing
@@ -89,8 +90,6 @@ class STU(nn.Module):
         # start_time = time.time()  # Reset timing
 
         delta_phi = x_tilde @ self.m_phi
-        # m_phi_batch = self.m_phi.unsqueeze(0).expand(batch_size, -1, -1)
-        # delta_phi = torch.bmm(x_tilde, m_phi_batch)
         # print(
         #     f'Time for delta_phi computation: {time.time() - start_time:.4f}s'
         # )
@@ -105,7 +104,6 @@ class STU(nn.Module):
 
         return y_t
 
-    # TODO: Remove vmap and handle batch sizes manually
     def forward(self, inputs):
         # start_time = time.time()
         output = self.apply_stu(inputs)
@@ -131,7 +129,7 @@ class Architecture(nn.Module):
         self.learnable_m_y = config.learnable_m_y
 
         self.embedding = nn.Linear(self.d_model, self.d_model)
-        self.stu_layer = nn.Sequential(
+        self.stu_layer = nn.Sequential( # TODO: Rename this - it's not only an STU layer
             nn.LayerNorm(self.d_model),
             STU(
                 d_out=self.d_model,
@@ -148,20 +146,18 @@ class Architecture(nn.Module):
             nn.Dropout(self.dropout),
         )
         self.projection = nn.Linear(self.d_model, self.d_target)
-        # Report the number of parameters
         print(
-            'STU Model Parameter Count: %.2fM'
-            % (self.get_num_params() / 1e6,)
+            'STU Model Parameter Count: %.2fM' % (self.get_num_params() / 1e6,)
         )
 
 
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
-        
+
         Args:
-            non_embedding (bool, optional): 
-            Whether to exclude the positional embeddings (if applicable). 
+            non_embedding (bool, optional):
+            Whether to exclude the positional embeddings (if applicable).
             Defaults to True.
 
         Returns:
@@ -170,27 +166,24 @@ class Architecture(nn.Module):
         n_params = sum(p.numel() for p in self.parameters())
         return n_params
 
-
     def forward(self, inputs):
         # start_time = time.time()  # Start timing for the embedding operation
         x = self.embedding(inputs)
         # embedding_time = time.time() - start_time
         # print(f'Time for embedding: {embedding_time:.4f}s')
 
-        total_layer_time = 0
+        # total_layer_time = 0
 
         for i in range(self.num_layers):
             # start_time = time.time()  # Start timing for each layer
-            z = x
-            x = self.stu_layer(x)
-            x = x + z
+            x = self.stu_layer(x) + x
             # layer_time = time.time() - start_time
             # total_layer_time += layer_time
             # print(f'Time for layer {i}: {layer_time:.4f}s')
 
         # print(f'Total time for all layers: {total_layer_time:.4f}s')
 
-        start_time = time.time()  # Start timing for the final projection
+        # start_time = time.time()  # Start timing for the final projection
 
         output = self.projection(x)
         # projection_time = time.time() - start_time

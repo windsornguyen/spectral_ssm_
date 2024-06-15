@@ -15,10 +15,10 @@ input_data = np.load(input_file)
 target_data = np.load(target_file)
 
 # Perform EDA
-print("Input Data Shape:", input_data.shape)
-print("Target Data Shape:", target_data.shape)
-print("Input Data Sample:", input_data[:5])
-print("Target Data Sample:", target_data[:5])
+print('Input Data Shape:', input_data.shape)
+print('Target Data Shape:', target_data.shape)
+print('Input Data Sample:', input_data[:5])
+print('Target Data Sample:', target_data[:5])
 
 # Plot some samples
 plt.figure(figsize=(10, 4))
@@ -33,23 +33,27 @@ plt.title('Target Data Distribution')
 plt.show()
 
 # Split data into train and validation sets
-X_train, X_val, y_train, y_val = train_test_split(input_data, target_data, test_size=0.2, random_state=42)
+X_train, X_val, y_train, y_val = train_test_split(
+    input_data, target_data, test_size=0.2, random_state=42
+)
 
-print("Input Data Stats:")
-print("Means:", np.mean(input_data, axis=0))
-print("Standard Deviations:", np.std(input_data, axis=0))
-print("Min:", np.min(input_data, axis=0))
-print("Max:", np.max(input_data, axis=0))
+print('Input Data Stats:')
+print('Means:', np.mean(input_data, axis=0))
+print('Standard Deviations:', np.std(input_data, axis=0))
+print('Min:', np.min(input_data, axis=0))
+print('Max:', np.max(input_data, axis=0))
 
-print("\nOutput Data Stats:")
-print("Means:", np.mean(target_data, axis=0))
-print("Standard Deviations:", np.std(target_data, axis=0))
-print("Min:", np.min(target_data, axis=0))
-print("Max:", np.max(target_data, axis=0))
+print('\nOutput Data Stats:')
+print('Means:', np.mean(target_data, axis=0))
+print('Standard Deviations:', np.std(target_data, axis=0))
+print('Min:', np.min(target_data, axis=0))
+print('Max:', np.max(target_data, axis=0))
 
 # Print dimensions of the splts
-print(f"Train inputs shape: {X_train.shape}, train targets shape: {y_train.shape}")
-print(f"Val inputs shape: {X_val.shape}, val targets shape: {y_val.shape}")
+print(
+    f'Train inputs shape: {X_train.shape}, train targets shape: {y_train.shape}'
+)
+print(f'Val inputs shape: {X_val.shape}, val targets shape: {y_val.shape}')
 
 # # Save the split data to .npy files
 # dataset = f'{controller}/3000'
@@ -81,5 +85,5 @@ print(f"Val inputs shape: {X_val.shape}, val targets shape: {y_val.shape}")
 #         x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
 #     else:
 #         x, y = x.to(device), y.to(device)
-    
+
 #     return x, y

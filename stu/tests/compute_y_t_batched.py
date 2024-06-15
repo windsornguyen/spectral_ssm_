@@ -2,6 +2,7 @@ import torch
 import jax
 import jax.numpy as jnp
 import numpy as np
+import time
 import torch.autograd.profiler as profiler
 
 
@@ -9,21 +10,23 @@ import torch.autograd.profiler as profiler
 TEST_TORCH_COMPUTE_Y_T_TORCH_BATCHED = True
 TEST_TORCH_COMPUTE_Y_T_STACK_BATCHED = True
 TEST_JAX_BATCHED = True
-TEST_JAX = True
+TEST_JAX = False
 PROFILE_TORCH = True
 BENCHMARK_TORCH = True
 COMPARE_RESULTS = True
 
 # Test parameters
-D_OUT = 61
-K = 8 
-BATCH_SIZE = 7
-SEQ_LEN = 800
+D_OUT = 29
+K = 2
+BATCH_SIZE = 4
+SEQ_LEN = 10
 ATOL = 1e-3
 
 
 @torch.jit.script
-def compute_y_t_torch_batched(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
+def compute_y_t_torch_batched(
+    m_y: torch.Tensor, deltas: torch.Tensor
+) -> torch.Tensor:
     """
     Compute sequence of y_t given a series of deltas and m_y via a simple scan with batch size.
 
@@ -35,22 +38,64 @@ def compute_y_t_torch_batched(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.
     Returns:
         torch.Tensor: A matrix of shape [bsz, seq_len, d_out].
     """
+    # d_out, k, _ = m_y.shape
+    # bsz, seq_len, _ = deltas.shape
+    # carry = torch.zeros((bsz, d_out, k), device=deltas.device)
+    # ys = torch.zeros((bsz, seq_len, d_out), device=deltas.device)
+
+    # for i in range(seq_len):
+    #     output = torch.einsum('ijk,bkj->bi', m_y, carry) + deltas[:, i, :]
+    #     ys[:, i, :] = output
+    #     carry = torch.roll(carry, shifts=1, dims=2)
+    #     carry[:, :, 0] = output
+
+    # return ys
+    # d_out, k, _ = m_y.shape
+    # bsz, seq_len, _ = deltas.shape
+    
+    # # Create a tensor of shape (bsz, seq_len, d_out, k) with shifted deltas
+    # shifted_deltas = torch.cat([
+    #     torch.zeros((bsz, 1, d_out, k), device=deltas.device),
+    #     deltas.unfold(1, k, 1)
+    # ], dim=1)
+    
+    # # Compute the output using broadcasting and einsum
+    # ys = torch.einsum('ijk,bljk->bli', m_y, shifted_deltas).sum(dim=-1)
+
+    # return ys
     d_out, k, _ = m_y.shape
-    bsz, seq_len, _ = deltas.shape
-    carry = torch.zeros((bsz, d_out, k), device=deltas.device)
-    ys = torch.zeros((bsz, seq_len, d_out), device=deltas.device)
+    bsz, sl, _ = deltas.shape
 
-    for i in range(seq_len):
-        output = torch.einsum('ijk,bkj->bi', m_y, carry) + deltas[:, i, :]
-        ys[:, i, :] = output
-        carry = torch.roll(carry, shifts=1, dims=2)
-        carry[:, :, 0] = output
+    # Define the transition matrix A
+    m_y = m_y.view(d_out, -1) # Reshape m_y to [d_out, k * d_out] for concat
+    eye = torch.eye((k - 1) * d_out, k * d_out, dtype=deltas.dtype, device=deltas.device)
+    A = torch.cat([m_y, eye], dim=0)
 
-    return ys
+    # Pad the deltas
+    padding = torch.zeros(bsz, sl, (k - 1) * d_out, dtype=deltas.dtype, device=deltas.device)
+    deltas = torch.cat([deltas, padding], dim=2)
+
+    # Initialize y and output list of y's
+    y = deltas[:, 0].unsqueeze(-1)
+    ys = [y[..., :d_out, 0]]
+
+    # Add the batch size dimension for batched matrix multiplication
+    deltas = deltas.view(bsz, sl, -1, 1)
+    A = A.unsqueeze(0).expand(bsz, -1, -1)
+
+    # Iterate through the sequence
+    for i in range(1, sl):
+        # y = A @ y + deltas[:, i]
+        y = torch.bmm(A, y) + deltas[:, i]
+        ys.append(y[:, :d_out, 0])
+
+    return torch.stack(ys, dim=1)
 
 
 @torch.jit.script
-def compute_y_t_stack_batched(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
+def compute_y_t_stack_batched(
+    m_y: torch.Tensor, deltas: torch.Tensor
+) -> torch.Tensor:
     """
     Compute sequence of y_t given a series of deltas and m_y via a simple scan with batch size.
 
@@ -67,15 +112,29 @@ def compute_y_t_stack_batched(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.
 
     device = m_y.device
 
-    A = torch.cat([
-        m_y.reshape(d_out, k * d_out).to(device),
-        torch.eye((k - 1) * d_out, k * d_out, device=device, dtype=torch.float32)
-    ], dim=0)
+    A = torch.cat(
+        [
+            m_y.reshape(d_out, k * d_out).to(device),
+            torch.eye(
+                (k - 1) * d_out, k * d_out, device=device, dtype=torch.float32
+            ),
+        ],
+        dim=0,
+    )
 
-    X = torch.cat([
-        deltas,
-        torch.zeros(bsz, seq_len, (k - 1) * d_out, device=device, dtype=torch.float32)
-    ], dim=2)
+    X = torch.cat(
+        [
+            deltas,
+            torch.zeros(
+                bsz,
+                seq_len,
+                (k - 1) * d_out,
+                device=device,
+                dtype=torch.float32,
+            ),
+        ],
+        dim=2,
+    )
 
     y = X[:, 0]
     ys = [y[..., :d_out]]
@@ -112,7 +171,9 @@ def compute_y_t_jax(m_y: jnp.ndarray, deltas: jnp.ndarray) -> jnp.ndarray:
 
 
 @jax.jit
-def compute_y_t_jax_batched(m_y: jnp.ndarray, deltas: jnp.ndarray) -> jnp.ndarray:
+def compute_y_t_jax_batched(
+    m_y: jnp.ndarray, deltas: jnp.ndarray
+) -> jnp.ndarray:
     """
     Compute sequence of y_t given a series of deltas and m_y via a simple scan with batch size.
 
@@ -128,15 +189,15 @@ def compute_y_t_jax_batched(m_y: jnp.ndarray, deltas: jnp.ndarray) -> jnp.ndarra
 
 
 def main():
-    import time
-
     # Set a seed
     np.random.seed(42)
 
     # Create random input data
     m_y_np = np.random.rand(D_OUT, K, D_OUT).astype(np.float32)
     deltas_np = np.random.rand(SEQ_LEN, D_OUT).astype(np.float32)
-    deltas_bsz_np = np.random.rand(BATCH_SIZE, SEQ_LEN, D_OUT).astype(np.float32)
+    deltas_bsz_np = np.random.rand(BATCH_SIZE, SEQ_LEN, D_OUT).astype(
+        np.float32
+    )
     m_y_torch = torch.from_numpy(m_y_np)
     deltas_torch = torch.from_numpy(deltas_np)
     deltas_bsz_torch = torch.from_numpy(deltas_bsz_np)
@@ -150,13 +211,23 @@ def main():
     deltas_torch = deltas_torch.to(device)
     deltas_bsz_torch = deltas_bsz_torch.to(device)
 
-    print("Testing compute_y_t_jax function for m_y of shape", m_y_np.shape, "and deltas of shape", deltas_np.shape)
-    print("Testing compute_y_t_jax_batched function for m_y of shape", m_y_np.shape, "and deltas of shape", deltas_bsz_np.shape)
-    print("Shape of m_y_np:", m_y_np.shape)
-    print("Shape of deltas_np:", deltas_np.shape)
-    print("Shape of m_y_jax:", m_y_jax.shape)
-    print("Shape of deltas_jax:", deltas_jax.shape)
-    print("Shape of deltas_bsz_np:", deltas_bsz_np.shape)
+    print(
+        'Testing compute_y_t_jax function for m_y of shape',
+        m_y_np.shape,
+        'and deltas of shape',
+        deltas_np.shape,
+    )
+    print(
+        'Testing compute_y_t_jax_batched function for m_y of shape',
+        m_y_np.shape,
+        'and deltas of shape',
+        deltas_bsz_np.shape,
+    )
+    print('Shape of m_y_np:', m_y_np.shape)
+    print('Shape of deltas_np:', deltas_np.shape)
+    print('Shape of m_y_jax:', m_y_jax.shape)
+    print('Shape of deltas_jax:', deltas_jax.shape)
+    print('Shape of deltas_bsz_np:', deltas_bsz_np.shape)
 
     # Warm up the JIT compilers
     if TEST_TORCH_COMPUTE_Y_T_TORCH_BATCHED:
@@ -177,9 +248,13 @@ def main():
     # PyTorch tests
     torch_versions = []
     if TEST_TORCH_COMPUTE_Y_T_TORCH_BATCHED:
-        torch_versions.append(('compute_y_t_torch_batched', compute_y_t_torch_batched))
+        torch_versions.append(
+            ('compute_y_t_torch_batched', compute_y_t_torch_batched)
+        )
     if TEST_TORCH_COMPUTE_Y_T_STACK_BATCHED:
-        torch_versions.append(('compute_y_t_stack_batched', compute_y_t_stack_batched))
+        torch_versions.append(
+            ('compute_y_t_stack_batched', compute_y_t_stack_batched)
+        )
 
     results_torch = []
     execution_times = {}
@@ -220,7 +295,9 @@ def main():
 
         start_time_jax_batched = time.time()
 
-        result_jax_batched = compute_y_t_jax_batched(m_y_jax, deltas_bsz_jax).block_until_ready()
+        result_jax_batched = compute_y_t_jax_batched(
+            m_y_jax, deltas_bsz_jax
+        ).block_until_ready()
 
         time_jax_batched = time.time() - start_time_jax_batched
 

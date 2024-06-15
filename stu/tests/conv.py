@@ -4,7 +4,6 @@ import jax
 import jax.numpy as jnp
 import jax.scipy.signal
 import time
-import torch.nn.functional as F
 
 
 def tr_conv(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -26,6 +25,42 @@ def tr_conv(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     return z[:x.shape[0]]
 
 
+@torch.jit.script
+def batched_tr_conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+    """
+    Perform batched truncated convolution using FFT.
+
+    Args:
+        v (torch.Tensor): Tensor of shape [bsz, l, k, d_in].
+        u (torch.Tensor): Tensor of shape [bsz, l, k, d_in].
+
+    Returns:
+        torch.Tensor: Convolution result of shape [bsz, l, k, d_in].
+    """
+    bsz, l, k, d_in = v.shape
+
+    # Perform FFT on both tensors along the sequence length
+    n = l * 2 - 1
+    V = torch.fft.rfft(v, n=n, dim=1)
+    U = torch.fft.rfft(u, n=n, dim=1)
+
+    # Perform element-wise multiplication in the Fourier domain
+    Z = V * U
+
+    # Inverse FFT to get the convolution result
+    z = torch.fft.irfft(Z, n=n, dim=1)
+
+    return z[:, :l]
+
+
+def nearest_power_of_2(x: int):
+    s = bin(x)
+    s = s.lstrip('-0b')
+    length = len(s)
+    return 1 << (length - 1) if x == 1 << (length - 1) else 1 << length
+
+
+# @torch.jit.script
 def conv_torch(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     """
     Compute convolution to project input sequences into the spectral basis using broadcasting.
@@ -42,21 +77,35 @@ def conv_torch(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     # bmmconv = torch.vmap(mmconv, in_dims=(None, 0), out_dims=0)
     # return bmmconv(v, u)
     
-    bsz, l, d_in = u.shape
-    k = v.shape[1]
+    # bsz, l, d_in = u.shape
+    # k = v.shape[1]
 
-    # Reshape and expand dimensions for broadcasting
-    v = v.view(1, l, k, 1).expand(bsz, -1, -1, d_in)
-    u = u.view(bsz, l, 1, d_in).expand(-1, -1, k, -1)
+    # # Reshape and expand dimensions for broadcasting
+    # v = v.view(1, l, k, 1).expand(bsz, -1, -1, d_in)
+    # u = u.view(bsz, l, 1, d_in).expand(-1, -1, k, -1)
 
-    # Perform convolution using tr_conv, TODO: vectorize this without vmap
-    result = torch.zeros(bsz, l, k, d_in, device=v.device)
-    for b in range(bsz):
-        for i in range(k):
-            for j in range(d_in):
-                result[b, :, i, j] = tr_conv(v[b, :, i, j], u[b, :, i, j])
+    # # Perform convolution using tr_conv, TODO: vectorize this without vmap
+    # result = torch.zeros(bsz, l, k, d_in, device=v.device)
+    # for b in range(bsz):
+    #     for i in range(k):
+    #         for j in range(d_in):
+    #             result[b, :, i, j] = tr_conv(v[b, :, i, j], u[b, :, i, j])
 
-    return result
+    # return result
+
+    bsz, sl, d_in = u.shape
+    _, k = v.shape
+    n = nearest_power_of_2(sl * 2 - 1) # Round n to the nearest power of 2
+
+    v = v.unsqueeze(0).unsqueeze(-1).expand(bsz, -1, -1, d_in)
+    u = u.unsqueeze(2).expand(-1, -1, k, -1)
+
+    V = torch.fft.rfft(v, n=n, dim=1)
+    U = torch.fft.rfft(u, n=n, dim=1)
+    Z = V * U
+    z = torch.fft.irfft(Z, n=n, dim=1)
+
+    return z[:, :sl]
 
 
 # JAX implementation using jax.jit and batch sizes
