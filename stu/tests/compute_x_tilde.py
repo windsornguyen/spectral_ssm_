@@ -11,26 +11,33 @@ import torch.autograd.profiler as profiler
 def compute_x_tilde_torch(
     inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
 ) -> torch.Tensor:
-    """Compute the x_tilde component of spectral SSM using PyTorch.
+    """
+    Compute the x_tilde component of spectral state space model.
 
     Args:
-        inputs (torch.Tensor): A tensor of shape [bsz, seq_len, d_in].
+        inputs (torch.Tensor): A tensor of shape [bsz, sl, d_in].
         eigh (tuple[torch.Tensor, torch.Tensor]): A tuple of eigenvalues of shape [k,] and
-            eigenvectors of shape [seq_len, k].
+            eigenvectors of shape [sl, k].
 
     Returns:
-        torch.Tensor: x_tilde: A tensor of shape [bsz, seq_len, k * d_in].
+        torch.Tensor: x_tilde: A tensor of shape [bsz, sl, k * d_in].
     """
     eig_vals, eig_vecs = eigh
-    batch_size, seq_len, d_in = inputs.shape
+    k = eig_vals.size(0)
+    bsz, sl, d_in = inputs.shape
 
-    x_tilde = conv_torch(eig_vecs, inputs)
-    x_tilde *= eig_vals.unsqueeze(0).unsqueeze(2) ** 0.25
+    # Project inputs into the spectral basis
+    x_spectral = conv_torch(eig_vecs, inputs) # -> [bsz, sl, k, d_in]
 
-    # This shift is introduced as the rest is handled by the AR part.
-    # NOTE: Shifting twice is incorrect, noted by Evan.
-    # return shift_torch(shift_torch(x_tilde.reshape((batch_size, seq_len, -1))))
-    return x_tilde.reshape((batch_size, seq_len, -1))
+    # Reshape dims of eig_vals to match dims of x_spectral
+    eig_vals = eig_vals.view(1, 1, k, 1) # -> [1, 1, k, 1]
+
+    # Perform spectral filtering on x to obtain x_tilde
+    x_tilde = x_spectral * eig_vals ** 0.25
+
+    # TODO: May have to adjust this once we introduce autoregressive component.
+    # Reshape x_tilde so that it's matmul-compatible with m_phi
+    return x_tilde.view(bsz, sl, k * d_in)
 
 
 @jax.jit
@@ -102,7 +109,7 @@ with profiler.profile(with_stack=True, profile_memory=True) as prof:
     )
 
 # Print the profiling results for PyTorch
-print(prof.key_averages().table(sort_by='cpu_time_total'))
+# print(prof.key_averages().table(sort_by='cpu_time_total'))
 
 # Benchmark PyTorch
 start_time_torch = time.time()

@@ -2,7 +2,6 @@ import torch
 import jax
 import jax.numpy as jnp
 import numpy as np
-import time
 import torch.autograd.profiler as profiler
 
 
@@ -66,30 +65,35 @@ def compute_y_t_torch_batched(
     d_out, k, _ = m_y.shape
     bsz, sl, _ = deltas.shape
 
-    # Define the transition matrix A
-    m_y = m_y.view(d_out, -1) # Reshape m_y to [d_out, k * d_out] for concat
+    # Define the transition matrix A, and add bsz for bmm
+    A = m_y.view(d_out, k * d_out)  # Reshape m_y to [d_out, k * d_out] for concat
     eye = torch.eye((k - 1) * d_out, k * d_out, dtype=deltas.dtype, device=deltas.device)
-    A = torch.cat([m_y, eye], dim=0)
+    A = torch.cat([A, eye], dim=0)
+    A = A.unsqueeze(0).expand(bsz, k * d_out, k * d_out) # -> [bsz, k * d_out, k * d_out]
 
-    # Pad the deltas
-    padding = torch.zeros(bsz, sl, (k - 1) * d_out, dtype=deltas.dtype, device=deltas.device)
-    deltas = torch.cat([deltas, padding], dim=2)
+    # Add (k - 1) rows of padding to deltas
+    padding = torch.zeros(
+        bsz, sl, (k - 1) * d_out, dtype=deltas.dtype, device=deltas.device
+    ) # -> [bsz, sl, (k - 1) * d_out]
 
-    # Initialize y and output list of y's
-    y = deltas[:, 0].unsqueeze(-1)
-    ys = [y[..., :d_out, 0]]
+    carry = torch.cat([deltas, padding], dim=2)  # -> [bsz, sl, k * d_out]
 
-    # Add the batch size dimension for batched matrix multiplication
-    deltas = deltas.view(bsz, sl, -1, 1)
-    A = A.unsqueeze(0).expand(bsz, -1, -1)
+    # Reshape for sequential processing
+    carry = carry.view(bsz, sl, k * d_out, 1) # -> [bsz, sl, k * d_out, 1]
+
+    # Initialize y and the output list of y's
+    y = carry[:, 0]  # -> [bsz, k * d_out, 1]
+    ys = [y[:, :d_out, 0]] # -> [bsz, d_out]
 
     # Iterate through the sequence
+    # TODO: Unsure of how to further vectorize/optimize this given its sequential nature.
+    # This loop takes up __98%__ of this function.
     for i in range(1, sl):
-        # y = A @ y + deltas[:, i]
-        y = torch.bmm(A, y) + deltas[:, i]
+        y = torch.bmm(A, y) + carry[:, i]
         ys.append(y[:, :d_out, 0])
-
-    return torch.stack(ys, dim=1)
+    ys = torch.stack(ys, dim=1) # -> [bsz, sl, d_out]
+    
+    return ys
 
 
 @torch.jit.script
@@ -189,6 +193,8 @@ def compute_y_t_jax_batched(
 
 
 def main():
+    import time
+
     # Set a seed
     np.random.seed(42)
 

@@ -10,7 +10,8 @@ import torch
 
 @torch.jit.script
 def get_hankel_matrix(n: int) -> torch.Tensor:
-    """Generate a spectral Hankel matrix.
+    """
+    Generate a spectral Hankel matrix.
 
     Args:
         n (int): Number of rows in square spectral Hankel matrix.
@@ -19,16 +20,19 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
         torch.Tensor: A spectral Hankel matrix of shape [n, n].
     """
     indices = torch.arange(1, n + 1)  # -> [n]
-    sum_indices = indices[:, None] + indices[None, :]  # -> [n, n]
-    z = 2 / (sum_indices**3 - sum_indices)  # -> [n, n]
+    sums = indices[:, None] + indices[None, :]  # -> [n, n]
+    z = 2.0 / (sums**3 - sums)  # -> [n, n], use 2.0 to take advantage of CUDA
     return z
 
 
 @torch.jit.script
 def get_top_hankel_eigh(
-    n: int, k: int, device: torch.device
+    n: int, 
+    k: int, 
+    device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
+    """
+    Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
 
     Args:
         n (int): Number of rows in square spectral Hankel matrix.
@@ -40,7 +44,7 @@ def get_top_hankel_eigh(
     """
     hankel_matrix = get_hankel_matrix(n).to(device)  # -> [n, n]
     eig_vals, eig_vecs = torch.linalg.eigh(hankel_matrix)  # -> [n], [n, n]
-    return eig_vals[-k:], eig_vecs[:, -k:]  # -> ([k], [n, k])
+    return eig_vals[-k:], eig_vecs[:, -k:]  # -> [k, (n, k)]
 
 
 @torch.jit.script
@@ -50,7 +54,8 @@ def get_random_real_matrix(
     lower: float = -2.0,
     upper: float = 2.0,
 ) -> torch.Tensor:
-    """Generate a random real matrix.
+    """
+    Generate a random real matrix.
 
     Args:
         shape (list[int]): Shape of the matrix to generate.
@@ -63,25 +68,42 @@ def get_random_real_matrix(
     Returns:
         torch.Tensor: A random real matrix scaled by the specified factor.
     """
-    random = torch.randn(shape)
-    clamped = torch.clamp(random, min=lower, max=upper)
-    return scaling * clamped
+    random_matrix = torch.randn(shape)
+    clamped_matrix = torch.clamp(random_matrix, min=lower, max=upper)
+    return scaling * clamped_matrix
 
 
+# TODO: Do shape analysis on this function
 @torch.jit.script
 def shift(x: torch.Tensor) -> torch.Tensor:
-    """Shift time axis by one to align x_{t-1} and x_t.
+    """
+    Shift time axis by one to align x_{t-1} with x_t.
+
+    Simulates a time shift where each timestep of input tensor
+    is moved one step forward in time, and initial timestep is replaced w/ zeros.
 
     Args:
-        x (torch.Tensor): A tensor of shape [seq_len, d].
+        x (torch.Tensor): A tensor of shape [sl, d], where 'sl' is the
+                          sequence length and 'd' is the feature dimension.
 
     Returns:
-        torch.Tensor: A tensor of shape [seq_len, d] where index [0, :] is all zeros and
-            [i, :] is equal to x[i - 1, :] for i > 0.
+        torch.Tensor: A tensor of the same shape as 'x' where the first timestep
+                      is zeros and each subsequent timestep 'i' contains values
+                      from timestep 'i-1' of the input tensor.
     """
-    return torch.cat([torch.zeros_like(x[:1]), x[:-1]], dim=0)
+    # Construct a zero tensor for the initial timestep
+    init_step = torch.zeros_like(x[:1])
+
+    # Remove the last timestep
+    remaining_steps = x[:-1]
+
+    # Concat the initial zero tensor with the remaining sliced tensor
+    shifted = torch.cat([init_step, remaining_steps], dim=0)
+
+    return shifted
 
 
+# TODO: Put this somewhere else?
 def nearest_power_of_2(x: int):
     s = bin(x)
     s = s.lstrip('-0b')
@@ -89,11 +111,10 @@ def nearest_power_of_2(x: int):
     return 1 << (length - 1) if x == 1 << (length - 1) else 1 << length
 
 
-# TODO: Try to refactor to use Tri Dao's causal_conv1d lib
 @torch.jit.script
 def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     """
-    Compute convolution to project input sequences into the spectral basis using broadcasting.
+    Compute convolution to project input sequences into the spectral basis.
 
     Args:
         v (torch.Tensor): Top k eigenvectors of shape [sl, k].
@@ -104,11 +125,19 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     """
     bsz, sl, d_in = u.shape
     _, k = v.shape
-    n = nearest_power_of_2(sl * 2 - 1) # Round n to the nearest power of 2
+    
+    # Round n to the nearest power of 2
+    n = nearest_power_of_2(sl * 2 - 1)
 
-    v = v.unsqueeze(0).unsqueeze(-1).expand(bsz, -1, -1, d_in)
-    u = u.unsqueeze(2).expand(-1, -1, k, -1)
+    # Add and expand the bsz and d_in dims in v
+    v = v.view(1, sl, k, 1) # -> [1, sl, k, 1]
+    v = v.expand(bsz, sl, k, d_in) # -> [bsz, sl, k, d_in]
 
+    # Add and expand the k dim in u
+    u = u.view(bsz, sl, 1, d_in) # -> [bsz, sl, 1, d_in]
+    u = u.expand(bsz, sl, k, d_in) # -> [bsz, sl, k, d_in]
+
+    # Perform convolution!
     V = torch.fft.rfft(v, n=n, dim=1)
     U = torch.fft.rfft(u, n=n, dim=1)
     Z = V * U
@@ -134,15 +163,16 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     bsz, sl, _ = deltas.shape
 
     # Define the transition matrix A, and add bsz for bmm
-    A = m_y.view(d_out, -1)  # Reshape m_y to [d_out, k * d_out] for concat
+    A = m_y.view(d_out, k * d_out)  # Reshape m_y to [d_out, k * d_out] for concat
     eye = torch.eye((k - 1) * d_out, k * d_out, dtype=deltas.dtype, device=deltas.device)
     A = torch.cat([A, eye], dim=0)
-    A = A.unsqueeze(0).expand(bsz, -1, -1) # -> [bsz, k * d_out, k * d_out]
+    A = A.unsqueeze(0).expand(bsz, k * d_out, k * d_out) # -> [bsz, k * d_out, k * d_out]
 
     # Add (k - 1) rows of padding to deltas
     padding = torch.zeros(
         bsz, sl, (k - 1) * d_out, dtype=deltas.dtype, device=deltas.device
     ) # -> [bsz, sl, (k - 1) * d_out]
+
     carry = torch.cat([deltas, padding], dim=2)  # -> [bsz, sl, k * d_out]
 
     # Reshape for sequential processing
@@ -153,6 +183,8 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     ys = [y[:, :d_out, 0]] # -> [bsz, d_out]
 
     # Iterate through the sequence
+    # TODO: Unsure of how to further vectorize/optimize this given its sequential nature.
+    # This loop takes up __98%__ of this function.
     for i in range(1, sl):
         y = torch.bmm(A, y) + carry[:, i]
         ys.append(y[:, :d_out, 0])
@@ -167,8 +199,8 @@ def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     Compute the auto-regressive component of spectral SSM.
 
     Args:
-        w (torch.Tensor): An array of shape [d_out, d_in, k].
-        x (torch.Tensor): A single input sequence of shape [bsz, sl, d_in].
+        w (torch.Tensor): A weight matrix of shape [d_out, d_in, k].
+        x (torch.Tensor): Batch of input sequences of shape [bsz, sl, d_in].
 
     Returns:
         torch.Tensor: ar_x_preds: An output of shape [bsz, sl, d_out].
@@ -176,20 +208,23 @@ def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     bsz, sl, d_in = x.shape
     d_out, _, k = w.shape
 
-    # Contract over `d_in`
-    o = torch.einsum('oik,bli->bklo', w, x)  # [bsz, k, sl, d_out]
+    # Contract over `d_in` to combine weights with input sequences
+    o = torch.einsum('oik,bli->bklo', w, x)  # [bsz, k, l, d_out]
 
-    # For each `i` in `k`, roll the `(sl, d_out)` by `i` steps for each batch
+    # For each `i` in `k`, shift outputs by `i` positions to align for summation.
     rolled_o = torch.stack(
-        [torch.roll(o[:, i], shifts=i, dims=1) for i in range(k)], dim=1
-    )
+        [torch.roll(o[:, i], 
+        shifts=i, 
+        dims=1
+    ) for i in range(k)], dim=1) # -> [bsz, k, l, d_out]
 
     # Create a mask that zeros out nothing at `k=0`, the first `(sl, d_out)` at
-    # `k=1`, the first two `(l, dout)`s at `k=2`, etc.
-    m = torch.triu(torch.ones((k, sl), device=w.device)).unsqueeze(-1)
+    # `k=1`, the first two `(sl, dout)`s at `k=2`, etc.
+    mask = torch.triu(torch.ones((k, sl), device=w.device))
+    mask = mask.view(k, sl, 1) # Add d_out dim: -> [k, sl, 1]
 
-    # Mask and sum along `k`
-    return torch.sum(rolled_o * m, dim=1)
+    # Apply the mask and sum along `k`
+    return torch.sum(rolled_o * mask, dim=1)
 
 
 @torch.jit.script
@@ -197,7 +232,7 @@ def compute_x_tilde(
     inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
 ) -> torch.Tensor:
     """
-    Compute the x_tilde component of spectral SSM.
+    Compute the x_tilde component of spectral state space model.
 
     Args:
         inputs (torch.Tensor): A tensor of shape [bsz, sl, d_in].
@@ -208,10 +243,18 @@ def compute_x_tilde(
         torch.Tensor: x_tilde: A tensor of shape [bsz, sl, k * d_in].
     """
     eig_vals, eig_vecs = eigh
-    bsz, sl, _ = inputs.shape
+    k = eig_vals.size(0)
+    bsz, sl, d_in = inputs.shape
 
-    x_tilde = conv(eig_vecs, inputs)
-    x_tilde *= eig_vals.unsqueeze(0).unsqueeze(2) ** 0.25
+    # Project inputs into the spectral basis
+    x_spectral = conv(eig_vecs, inputs) # -> [bsz, sl, k, d_in]
+
+    # Reshape dims of eig_vals to match dims of x_spectral
+    eig_vals = eig_vals.view(1, 1, k, 1) # -> [1, 1, k, 1]
+
+    # Perform spectral filtering on x to obtain x_tilde
+    x_tilde = x_spectral * eig_vals ** 0.25
 
     # TODO: May have to adjust this once we introduce autoregressive component.
-    return x_tilde.reshape((bsz, sl, -1))
+    # Reshape x_tilde so that it's matmul-compatible with m_phi
+    return x_tilde.view(bsz, sl, k * d_in)

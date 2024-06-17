@@ -25,7 +25,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 from einops import rearrange
 from tqdm import tqdm
-from models.transformer.utils import padding_to_multiple_of, all_gather_func, get_data_parallel_rank, get_data_parallel_world_size
+
+# from utils import all_gather_func, get_data_parallel_rank, get_data_parallel_world_size
 from dataclasses import dataclass
 
 
@@ -70,8 +71,8 @@ class CausalSelfAttention(nn.Module):
             # Causal mask to ensure attention is only applied to the left in input sequence
             self.register_buffer(
                 'mask',
-                torch.tril(torch.ones(config.max_len, config.max_len)).view(
-                    1, 1, config.max_len, config.max_len
+                torch.tril(torch.ones(config.max_n_frames, config.max_n_frames)).view(
+                    1, 1, config.max_n_frames, config.max_n_frames
                 ),
             )
 
@@ -80,30 +81,30 @@ class CausalSelfAttention(nn.Module):
         Performs the forward pass of the CausalSelfAttention layer.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (B, T, C), where B is the batch size,
-                T is the sequence length, and C is the embedding dimensionality (n_embd).
+            x (torch.Tensor): Input tensor of shape (bsz, sl, d_in), where bsz is the batch size,
+                sl is the sequence length, and d_in is the embedding dimensionality (n_embd).
 
         Returns:
-            torch.Tensor: Output tensor of shape (B, T, C) after applying self-attention.
+            torch.Tensor: Output tensor of shape (bsz, sl, d_in) after applying self-attention.
         """
-        # Batch size, sequence length, embedding dimensionality (n_embd)
-        B, T, C = x.size()
+        bsz, sl, d_in = x.size()
 
         # Compute query, key, values for all heads in batch, and move head forward to be the batch dim
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
 
         # Reshape for multi-head attention
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+        k = k.view(bsz, sl, self.n_head, d_in // self.n_head).transpose(
             1, 2
-        )  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+        )  # -> (B, nh, sl, hs)
+        q = q.view(bsz, sl, self.n_head, d_in // self.n_head).transpose(
             1, 2
-        )  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+        )  # (B, nh, sl, hs)
+        v = v.view(bsz, sl, self.n_head, d_in // self.n_head).transpose(
             1, 2
-        )  # (B, nh, T, hs)
+        )  # (B, nh, sl, hs)
 
-        # Causal self-attention; self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        # Causal self-attention; self-attend: (bsz, nh, sl, hs) x (bsz, nh, hs, sl) -> (B, nh, sl, sl)
         if self.flash:
             # Efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(
@@ -117,13 +118,15 @@ class CausalSelfAttention(nn.Module):
         else:
             # Manual implementation of self-attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            att = att.masked_fill(self.bias[:, :, :sl, :sl] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            y = (
+                att @ v
+            )  # (bsz, nh, sl, sl) x (bsz, nh, sl, hs) -> (bsz, nh, sl, hs)
 
-        # Re-assemble all head outputs side by side
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        # Re-assemble / "concat" all attention head outputs side-by-side
+        y = y.transpose(1, 2).contiguous().view(bsz, sl, d_in)
 
         # Output projection
         y = self.resid_dropout(self.c_proj(y))
@@ -262,8 +265,12 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
 
     # TODO: Initialize the dilation ratios to what the paper used.
     def scattering(self, outs, lses, seq_len, bsz, offset=0):
+        assert len(outs) == len(lses)
+        assert len(outs) % len(self.args.dilated_ratio) == 0
         all_outs, all_lses = [], []
-        drs = [1]  # TODO: (Dynamically) replace with actual dilation ratios
+        drs = (
+            self.args.dilated_ratio
+        )  # TODO: (Dynamically) replace with actual dilation ratios
         if len(outs) > len(drs):
             drs = drs * (len(outs) // len(drs))
 
@@ -352,16 +359,17 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
         return y
 
 
-class MLP(nn.Module):
+class FFN(nn.Module):
     """
-    Simple multi-layer perceptron.
+    Simple feed-forward network.
     """
 
     def __init__(self, config):
-        super().__init__()
+        super(FFN, self).__init__()
         self.c_fc = nn.Linear(
             config.n_embd, config.scale * config.n_embd, bias=config.bias
         )
+        # TODO: Consider implementing Squared ReLU from https://arxiv.org/pdf/2109.08668
         self.gelu = nn.GELU()
         self.c_proj = nn.Linear(
             config.scale * config.n_embd, config.n_embd, bias=config.bias
@@ -382,11 +390,11 @@ class TransformerBlock(nn.Module):
     """
 
     def __init__(self, config):
-        super().__init__()
-        self.attn = self.get_attn_type(config)
+        super(TransformerBlock, self).__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd, bias=config.bias)
+        self.attn = self.get_attn_type(config)
         self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
+        self.ffn = FFN(config)
 
     def get_attn_type(self, config):
         if config.use_dilated_attn:
@@ -396,23 +404,26 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.ffn(self.ln_2(x))
         return x
 
 
 @dataclass
 class TransformerConfigs:
-    n_layer: int = 6
-    n_head: int = 1
-    n_embd: int = 37  # Ant-v1 default
+    n_layers: int = 6
+    n_head: int = 6
+    n_embd: int = 384  # Embedding dimension
     scale: int = 4
-    d_out: int = 29  # Ant-v1 default
-    max_len: int = 1_000
+    n_frames: int = 299 # mujoco_data_all.py version
+    max_n_frames: int = 300
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     dropout: float = 0.25
     use_dilated_attn: bool = True
     loss_fn: nn.Module = None
-
+    
+    d_in: int = 112896 # Input dimension
+    d_out: int = 112896  # Target dimensiona (2304 x 7 x 7, from EfficientNet-B6)
+    transformer_lr: float = 7.5e-4
 
 class Transformer(nn.Module):
     """
@@ -421,15 +432,17 @@ class Transformer(nn.Module):
 
     def __init__(self, config):
         super(Transformer, self).__init__()
-        assert config.max_len is not None
+        assert config.max_n_frames is not None
         self.config = config
 
+        # TODO: Decide whether in_embd (., n_embd) or (., n_frames)
+        self.in_embd = nn.Linear(config.d_in, config.n_embd)
         self.transformer = nn.ModuleDict(
             dict(
-                wpe=nn.Embedding(config.max_len, config.n_embd),
+                wpe=nn.Embedding(config.max_n_frames, config.n_embd),
                 dropout=nn.Dropout(config.dropout),
-                h=nn.ModuleList(
-                    [TransformerBlock(config) for _ in range(config.n_layer)]
+                hidden=nn.ModuleList(
+                    [TransformerBlock(config) for _ in range(config.n_layers)]
                 ),
                 ln_f=nn.LayerNorm(config.n_embd, bias=config.bias),
             )
@@ -446,7 +459,7 @@ class Transformer(nn.Module):
         for pn, p in self.named_parameters():
             if pn.endswith('c_proj.weight'):
                 torch.nn.init.normal_(
-                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
+                    p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layers)
                 )
 
         # Report the number of parameters
@@ -468,6 +481,12 @@ class Transformer(nn.Module):
         return n_params
 
     def _init_weights(self, module):
+        """
+        Initialize the weights of the model.
+
+        Args:
+            module (nn.Module): The module to initialize.
+        """
         if isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
             if module.bias is not None:
@@ -477,34 +496,54 @@ class Transformer(nn.Module):
 
     def forward(self, inputs, targets=None):
         """
-        inputs: (batch_size, seq_len, d_in)
+        Perform the forward pass of the Transformer model.
+
+        Args:
+            inputs (torch.Tensor): Input tensor of shape (bsz, sl, d_in), where:
+                - bsz: batch size
+                - n_frames: number of video frames
+                - d_in: input dimension (384, hard-coded)
+            targets (torch.Tensor, optional): Target tensor for training.
+
+        Returns:
+            torch.Tensor: Predicted output tensor of shape (bsz, sl, d_out), where:
+                - bsz: batch size
+                - n_frames: number of video frames
+                - d_out: output dimension (2304 x 7 x 7, from EfficientNet-B6)
+
+        Description:
+            The forward pass performs the following steps:
+            1. Generate pos. emb. using the pos. emb. layer (self.transformer.wpe).
+            2. Apply dropout to the position embeddings.
+            3. Pass input thru each transformer block in hidden layers (self.transformer.hidden).
+            4. Apply layer norm to output of the last transformer block.
+            5. Pass normalized output through regression head (self.regression_head) to obtain predictions.
         """
         device = inputs.device
-        batch_size, seq_len, d_in = inputs.size()
+        bsz, n_frames, d_in = inputs.size()
         assert (
-            seq_len <= self.config.max_len
-        ), f'Cannot forward sequence of length {seq_len}, block size is only {self.config.max_len}'
-        pos = (
-            torch.arange(0, seq_len, dtype=torch.long, device=device)
-            .unsqueeze(0)
-            .expand(batch_size, -1)
-        )  # shape (b, t)
+            n_frames <= self.config.max_n_frames
+        ), f'Cannot forward sequence of length {n_frames}, block size is only {self.config.max_n_frames}'
 
-        # Forward the Transformer model itself
-        pos_emb = self.transformer.wpe(
-            pos
-        )  # Position embeddings of shape (t, n_embd)
-        x = self.transformer.dropout(pos_emb)
-        for block in self.transformer.h:
+        # Project input to lower-dimensional space
+        x = self.in_embd(inputs)  # -> (bsz, n_frames, n_embd)
+
+        # Generate positional embeddings for each frame
+        pos = torch.arange(0, n_frames, dtype=torch.long, device=device)  # -> (n_frames)        
+
+        # Position embeddings of shape (n_frames, n_embd))
+        pos_emb = self.transformer.wpe(pos) # -> (bsz, n_frames, n_embd)
+
+        # Add positional embeddings to input
+        x = x + self.transformer.dropout(pos_emb.unsqueeze(0).expand(bsz, -1, -1))
+        for block in self.transformer.hidden:
             x = block(x)
         x = self.transformer.ln_f(x)
-        preds = self.regression_head(x)  # -> (batch_size, seq_len, d_out)
+
+        # Not completely analogous to vocab_size returned in GPT (we have d_out)
+        # but it's a regression problem, so how should we structure our model?
+        preds = self.regression_head(x)  # -> (bsz, n_frames, d_out)
         return preds
-        # if targets is not None:
-        #     loss = self.loss_fn(preds, targets)
-        # else:
-        #     loss = None
-        # return preds, loss
 
     # TODO: Not sure when/where this could be used, but we'd like to use it!
     def estimate_mfu(self, fwdbwd_per_iter, dt):
@@ -515,10 +554,10 @@ class Transformer(nn.Module):
         cfg = self.config
 
         L, H, Q, T = (
-            cfg.n_layer,
+            cfg.n_layers,
             cfg.n_head,
             cfg.n_embd // cfg.n_head,
-            cfg.max_len,
+            cfg.max_n_frames,
         )
         flops_per_token = 6 * N + 12 * L * H * Q * T
         flops_per_fwdbwd = flops_per_token * T

@@ -10,13 +10,6 @@ import torch
 import torch.distributed as dist
 
 
-def padding_to_multiple_of(n, mult):
-    remainder = n % mult
-    if remainder == 0:
-        return 0
-    return mult - remainder
-
-
 def get_data_parallel_group():
     if torch.distributed.is_initialized():
         if not hasattr(get_data_parallel_group, '_global_group'):

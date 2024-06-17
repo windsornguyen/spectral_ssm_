@@ -14,11 +14,11 @@ def compute_ar_x_preds_torch(
     Compute the auto-regressive component of spectral SSM.
 
     Args:
-        w (torch.Tensor): An array of shape [d_out, d_in, k].
-        x (torch.Tensor): A single input sequence of shape [bsz, l, d_in].
+        w (torch.Tensor): A weight matrix of shape [d_out, d_in, k].
+        x (torch.Tensor): Batch of input sequences of shape [bsz, sl, d_in].
 
     Returns:
-        torch.Tensor: ar_x_preds: An output of shape [bsz, l, d_out].
+        torch.Tensor: ar_x_preds: An output of shape [bsz, sl, d_out].
     """
     # bsz, l, d_in = x.shape
     # d_out, _, k = w.shape
@@ -36,23 +36,26 @@ def compute_ar_x_preds_torch(
 
     # # Mask and sum along `k`
     # return torch.sum(rolled_o * m, dim=1)
-    bsz, l, d_in = x.shape
+    bsz, sl, d_in = x.shape
     d_out, _, k = w.shape
 
-    # Contract over `d_in`
+    # Contract over `d_in` to combine weights with input sequences
     o = torch.einsum('oik,bli->bklo', w, x)  # [bsz, k, l, d_out]
 
-    # For each `i` in `k`, roll the `(l, d_out)` by `i` steps for each batch
-    rolled_o = torch.stack([torch.roll(o[:, i], shifts=i, dims=1) for i in range(k)], dim=1)
+    # For each `i` in `k`, shift outputs by `i` positions to align for summation.
+    rolled_o = torch.stack(
+        [torch.roll(o[:, i], 
+        shifts=i, 
+        dims=1
+    ) for i in range(k)], dim=1) # -> [bsz, k, l, d_out]
 
-    # Create a mask that zeros out nothing at `k=0`, the first `(l, d_out)` at
-    # `k=1`, the first two `(l, dout)`s at `k=2`, etc.
-    m = torch.triu(torch.ones((k, l), device=w.device)).unsqueeze(-1)
+    # Create a mask that zeros out nothing at `k=0`, the first `(sl, d_out)` at
+    # `k=1`, the first two `(sl, dout)`s at `k=2`, etc.
+    mask = torch.triu(torch.ones((k, sl), device=w.device))
+    mask = mask.view(k, sl, 1) # Add d_out dim: -> [k, sl, 1]
 
-    # Mask and sum along `k`
-    return torch.sum(rolled_o * m, dim=1)
-   
-    
+    # Apply the mask and sum along `k`
+    return torch.sum(rolled_o * mask, dim=1)
 
 
 @jax.jit

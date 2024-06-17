@@ -57,7 +57,7 @@ class Experiment:
             dict[str, float]: A dictionary of metrics for the training step.
         """
         metrics = {}
-        inputs, targets = inputs.to(self.device), targets.to(self.device)
+        inputs, targets = inputs.to(self.device), targets.to(self.device) # from a video
 
         # start_total = time.time()
 
@@ -70,7 +70,10 @@ class Experiment:
             # print(f'Time for forward pass: {end_forward - start_forward:.4f}s')
 
             # start_loss = time.time()
-            loss, metrics = self.loss_fn(outputs, targets)
+            print('in shape', targets.shape)
+            print('out shape', outputs.shape)
+            loss = self.loss_fn(outputs, targets)
+            # TODO: Add metrics back somehow after MSE
             # end_loss = time.time()
             # print(f'Time for loss computation: {end_loss - start_loss:.4f}s')
             metrics['loss'] = loss.item()
@@ -79,7 +82,7 @@ class Experiment:
         self.scaler.scale(loss).backward()
         # end_backward = time.time()
         # print(f'Time for backward pass: {end_backward - start_backward:.4f}s')
-        
+
         # Unscale the gradients to report gradient norm
         # start_unscale = time.time()
         self.scaler.unscale_(self.optimizer)
@@ -93,7 +96,7 @@ class Experiment:
             if param.grad is not None:
                 param_norm = param.grad.data.norm(2).item()
                 total_norm += param_norm**2
-                print(f'{name}: {param_norm}')
+                # print(f'{name}: {param_norm}')
             else:
                 print(f'No gradient found: {name}')
         total_norm = total_norm**0.5

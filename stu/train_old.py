@@ -201,12 +201,12 @@ def main() -> None:
 
     # General training hyperparameters
     train_batch_size: int = (
-        16 // world_size
+        48 // world_size
     )  # scale batch size for distributed training
     val_batch_size: int = (
-        16 // world_size
+        48 // world_size
     )  # scale batch size for distributed training
-    num_epochs: int = 3
+    num_epochs: int = 1
     eval_period: int = 30
     patience: int = 5
     checkpoint_dir: str = 'checkpoints'

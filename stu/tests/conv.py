@@ -63,14 +63,14 @@ def nearest_power_of_2(x: int):
 # @torch.jit.script
 def conv_torch(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     """
-    Compute convolution to project input sequences into the spectral basis using broadcasting.
+    Compute convolution to project input sequences into the spectral basis.
     
     Args:
-        v (torch.Tensor): Top k eigenvectors of shape [l, k].
-        u (torch.Tensor): Input of shape [bsz, l, d_in].
+        v (torch.Tensor): Top k eigenvectors of shape [sl, k].
+        u (torch.Tensor): Input of shape [bsz, sl, d_in].
     
     Returns:
-        torch.Tensor: A matrix of shape [bsz, l, k, d_in].
+        torch.Tensor: A matrix of shape [bsz, sl, k, d_in].
     """
     # mvconv = torch.vmap(tr_conv, in_dims=(1, None), out_dims=1)
     # mmconv = torch.vmap(mvconv, in_dims=(None, 1), out_dims=-1)
@@ -97,8 +97,13 @@ def conv_torch(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     _, k = v.shape
     n = nearest_power_of_2(sl * 2 - 1) # Round n to the nearest power of 2
 
-    v = v.unsqueeze(0).unsqueeze(-1).expand(bsz, -1, -1, d_in)
-    u = u.unsqueeze(2).expand(-1, -1, k, -1)
+    # Add and expand the bsz and d_in dims in v
+    v = v.view(1, sl, k, 1) # -> [1, sl, k, 1]
+    v = v.expand(bsz, sl, k, d_in) # -> [bsz, sl, k, d_in]
+    
+    # Add and expand the k dim in u
+    u = u.view(bsz, sl, 1, d_in) # -> [bsz, sl, 1, d_in]
+    u = u.expand(bsz, sl, k, d_in) # -> [bsz, sl, k, d_in]
 
     V = torch.fft.rfft(v, n=n, dim=1)
     U = torch.fft.rfft(u, n=n, dim=1)

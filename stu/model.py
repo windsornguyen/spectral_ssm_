@@ -62,23 +62,21 @@ class STU(nn.Module):
         self.auto_reg_k_y = auto_reg_k_y
         self.learnable_m_y = learnable_m_y
         self.m_x = 1.0 / (float(self.d_out) ** 0.5)
-
-        m_y = torch.empty([self.d_out, self.auto_reg_k_y, self.d_out])
-        self.m_y = (
-            nn.Parameter(nn.init.xavier_normal_(m_y))
-            if learnable_m_y
-            else self.register_buffer('m_y', m_y)
-        )
-
-        # TODO: Also use Glorot initialization for m_u?
         self.m_u = nn.Parameter(
-            stu_utils.get_random_real_matrix(
-                (self.d_out, self.d_out, self.auto_reg_k_u), self.m_x
+            torch.empty([self.d_out, self.d_out, self.auto_reg_k_u])
+        )
+        self.m_phi = nn.Parameter(
+            torch.empty([self.d_out * self.k, self.d_out])
+        )
+        self.m_y = (
+            nn.Parameter(
+                torch.empty([self.d_out, self.auto_reg_k_y, self.d_out])
+            )
+            if learnable_m_y
+            else self.register_buffer(
+                'm_y', torch.empty([self.d_out, self.auto_reg_k_y, self.d_out])
             )
         )
-        m_phi = torch.empty([self.d_out * self.k, self.d_out])
-        self.m_phi = nn.Parameter(nn.init.xavier_normal_(m_phi))
-
 
     def apply_stu(self, inputs):
         # start_time = time.time()  # Start timing
@@ -113,11 +111,9 @@ class STU(nn.Module):
         return output
 
 
-class Architecture(nn.Module):
-    """General model architecture based on STU blocks."""
-
+class STUBlock(nn.Module):
     def __init__(self, config):
-        super(Architecture, self).__init__()
+        super(STUBlock, self).__init__()
         self.d_model = config.d_model
         self.d_target = config.d_target
         self.num_layers = config.num_layers
@@ -127,10 +123,8 @@ class Architecture(nn.Module):
         self.auto_reg_k_u = config.auto_reg_k_u
         self.auto_reg_k_y = config.auto_reg_k_y
         self.learnable_m_y = config.learnable_m_y
-
-        self.embedding = nn.Linear(self.d_model, self.d_model)
-        self.stu_layer = nn.Sequential( # TODO: Rename this - it's not only an STU layer
-            nn.LayerNorm(self.d_model),
+        self.stu_block = nn.Sequential(
+            nn.LayerNorm(self.d_model, bias=False),
             STU(
                 d_out=self.d_model,
                 input_len=self.input_len,
@@ -145,10 +139,43 @@ class Architecture(nn.Module):
             nn.GLU(dim=-1),
             nn.Dropout(self.dropout),
         )
+
+    def forward(self, x):
+        return self.stu_block(x)
+
+
+class Architecture(nn.Module):
+    """
+    General model architecture based on STU blocks.
+    """
+
+    def __init__(self, config):
+        super(Architecture, self).__init__()
+        self.d_model = config.d_model
+        self.d_target = config.d_target
+        self.num_layers = config.num_layers
+        self.embedding = nn.Linear(self.d_model, self.d_model)
+        self.stu_block = STUBlock(config)
         self.projection = nn.Linear(self.d_model, self.d_target)
+        self.apply(self._init_weights)
         print(
             'STU Model Parameter Count: %.2fM' % (self.get_num_params() / 1e6,)
         )
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        elif isinstance(module, STU):
+            # Custom initialization for m_u, m_phi, and m_y matrices
+            m_x = 1.0 / (float(module.d_out) ** 0.5)
+            torch.nn.init.uniform_(module.m_u, -m_x, m_x)
+            torch.nn.init.xavier_normal_(module.m_phi)
+            if module.learnable_m_y:
+                torch.nn.init.xavier_normal_(module.m_y)
 
 
     def get_num_params(self, non_embedding=True):
@@ -163,8 +190,8 @@ class Architecture(nn.Module):
         Returns:
             int: The number of parameters in the model.
         """
-        n_params = sum(p.numel() for p in self.parameters())
-        return n_params
+        num_params = sum(p.numel() for p in self.parameters())
+        return num_params
 
     def forward(self, inputs):
         # start_time = time.time()  # Start timing for the embedding operation
@@ -176,7 +203,7 @@ class Architecture(nn.Module):
 
         for i in range(self.num_layers):
             # start_time = time.time()  # Start timing for each layer
-            x = self.stu_layer(x) + x
+            x = x + self.stu_block(x)
             # layer_time = time.time() - start_time
             # total_layer_time += layer_time
             # print(f'Time for layer {i}: {layer_time:.4f}s')

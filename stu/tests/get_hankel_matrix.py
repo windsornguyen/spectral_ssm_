@@ -5,7 +5,8 @@ import torch.autograd.profiler as profiler
 
 @torch.jit.script
 def get_hankel_matrix(n: int) -> torch.Tensor:
-    """Generate a spectral Hankel matrix.
+    """
+    Generate a spectral Hankel matrix.
 
     Args:
         n (int): Number of rows in square spectral Hankel matrix.
@@ -13,27 +14,27 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
     Returns:
         torch.Tensor: A spectral Hankel matrix of shape [n, n].
     """
-    indices = torch.arange(1, n + 1)
-    sum_indices = indices[:, None] + indices[None, :].contiguous()
-    z = 2 / (sum_indices ** 3 - sum_indices)
+    indices = torch.arange(1, n + 1)  # -> [n]
+    sums = indices[:, None] + indices[None, :]  # -> [n, n]
+    z = 2.0 / (sums**3 - sums)  # -> [n, n]
     return z
 
 def get_hankel_matrix_(
     n: int,
 ) -> np.ndarray:
-  """Generate a spectral Hankel matrix.
+    """Generate a spectral Hankel matrix.
 
-  Args:
-    n: Number of rows in square spectral Hankel matrix.
+    Args:
+        n: Number of rows in square spectral Hankel matrix.
 
-  Returns:
-    A spectral Hankel matrix of shape [n, n].
-  """
-  z = np.zeros((n, n))
-  for i in range(1, n + 1):
-    for j in range(1, n + 1):
-      z[i - 1, j - 1] = 2 / ((i + j) ** 3 - (i + j))
-  return z
+    Returns:
+        A spectral Hankel matrix of shape [n, n].
+    """
+    z = np.zeros((n, n))
+    for i in range(1, n + 1):
+        for j in range(1, n + 1):
+            z[i - 1, j - 1] = 2 / ((i + j) ** 3 - (i + j))
+    return z
 
 # Set seed
 np.random.seed(0)
