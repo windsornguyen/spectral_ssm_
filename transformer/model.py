@@ -25,7 +25,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 from einops import rearrange
 from tqdm import tqdm
-from transformer.utils import padding_to_multiple_of, all_gather_func, get_data_parallel_rank, get_data_parallel_world_size
+
+# from utils import all_gather_func, get_data_parallel_rank, get_data_parallel_world_size
 from dataclasses import dataclass
 
 
@@ -70,8 +71,8 @@ class CausalSelfAttention(nn.Module):
             # Causal mask to ensure attention is only applied to the left in input sequence
             self.register_buffer(
                 'mask',
-                torch.tril(torch.ones(config.max_len, config.max_len)).view(
-                    1, 1, config.max_len, config.max_len
+                torch.tril(torch.ones(config.max_n_frames, config.max_n_frames)).view(
+                    1, 1, config.max_n_frames, config.max_n_frames
                 ),
             )
 
@@ -80,30 +81,30 @@ class CausalSelfAttention(nn.Module):
         Performs the forward pass of the CausalSelfAttention layer.
 
         Args:
-            x (torch.Tensor): Input tensor of shape (B, T, C), where B is the batch size,
-                T is the sequence length, and C is the embedding dimensionality (n_embd).
+            x (torch.Tensor): Input tensor of shape (bsz, sl, d_in), where bsz is the batch size,
+                sl is the sequence length, and d_in is the embedding dimensionality (n_embd).
 
         Returns:
-            torch.Tensor: Output tensor of shape (B, T, C) after applying self-attention.
+            torch.Tensor: Output tensor of shape (bsz, sl, d_in) after applying self-attention.
         """
-        # Batch size, sequence length, embedding dimensionality (n_embd)
-        B, T, C = x.size()
+        bsz, sl, d_in = x.size()
 
         # Compute query, key, values for all heads in batch, and move head forward to be the batch dim
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
+        qkv = self.c_attn(x)
+        q, k, v = qkv.split(self.n_embd, dim=2)
 
         # Reshape for multi-head attention
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+        k = k.view(bsz, sl, self.n_head, d_in // self.n_head).transpose(
             1, 2
-        )  # (B, nh, T, hs)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+        )  # -> (B, nh, sl, hs)
+        q = q.view(bsz, sl, self.n_head, d_in // self.n_head).transpose(
             1, 2
-        )  # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+        )  # (B, nh, sl, hs)
+        v = v.view(bsz, sl, self.n_head, d_in // self.n_head).transpose(
             1, 2
-        )  # (B, nh, T, hs)
+        )  # (B, nh, sl, hs)
 
-        # Causal self-attention; self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        # Causal self-attention; self-attend: (bsz, nh, sl, hs) x (bsz, nh, hs, sl) -> (B, nh, sl, sl)
         if self.flash:
             # Efficient attention using Flash Attention CUDA kernels
             y = torch.nn.functional.scaled_dot_product_attention(
@@ -117,13 +118,15 @@ class CausalSelfAttention(nn.Module):
         else:
             # Manual implementation of self-attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            att = att.masked_fill(self.bias[:, :, :sl, :sl] == 0, float('-inf'))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+            y = (
+                att @ v
+            )  # (bsz, nh, sl, sl) x (bsz, nh, sl, hs) -> (bsz, nh, sl, hs)
 
-        # Re-assemble all head outputs side by side
-        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        # Re-assemble / "concat" all attention head outputs side-by-side
+        y = y.transpose(1, 2).contiguous().view(bsz, sl, d_in)
 
         # Output projection
         y = self.resid_dropout(self.c_proj(y))
@@ -262,8 +265,12 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
 
     # TODO: Initialize the dilation ratios to what the paper used.
     def scattering(self, outs, lses, seq_len, bsz, offset=0):
+        assert len(outs) == len(lses)
+        assert len(outs) % len(self.args.dilated_ratio) == 0
         all_outs, all_lses = [], []
-        drs = [1]  # TODO: (Dynamically) replace with actual dilation ratios
+        drs = (
+            self.args.dilated_ratio
+        )  # TODO: (Dynamically) replace with actual dilation ratios
         if len(outs) > len(drs):
             drs = drs * (len(outs) // len(drs))
 
@@ -352,16 +359,17 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
         return y
 
 
-class MLP(nn.Module):
+class FFN(nn.Module):
     """
-    Simple multi-layer perceptron.
+    Simple feed-forward network.
     """
 
     def __init__(self, config):
-        super().__init__()
+        super(FFN, self).__init__()
         self.c_fc = nn.Linear(
             config.n_embd, config.scale * config.n_embd, bias=config.bias
         )
+        # TODO: Consider implementing Squared ReLU from https://arxiv.org/pdf/2109.08668
         self.gelu = nn.GELU()
         self.c_proj = nn.Linear(
             config.scale * config.n_embd, config.n_embd, bias=config.bias
@@ -382,11 +390,11 @@ class TransformerBlock(nn.Module):
     """
 
     def __init__(self, config):
-        super().__init__()
-        self.attn = self.get_attn_type(config)
+        super(TransformerBlock, self).__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd, bias=config.bias)
+        self.attn = self.get_attn_type(config)
         self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config)
+        self.ffn = FFN(config)
 
     def get_attn_type(self, config):
         if config.use_dilated_attn:
@@ -396,21 +404,21 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.ffn(self.ln_2(x))
         return x
 
 
 @dataclass
 class TransformerConfigs:
     n_layer: int = 6
-    n_head: int = 1
+    n_head: int = 6
     n_embd: int = 37  # Ant-v1 default
     scale: int = 4
     d_out: int = 29  # Ant-v1 default
     max_len: int = 1_000
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     dropout: float = 0.25
-    use_dilated_attn: bool = True
+    use_dilated_attn: bool = False
     loss_fn: nn.Module = None
 
 
