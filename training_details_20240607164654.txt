@@ -1,0 +1,4 @@
+Training completed for HalfCheetah-v1 at: 2024-06-07 16:46:54.660987
+Best model step: 60
+Best model validation loss: 39.6472
+Best model checkpoint saved at: physics_checkpoints_halfcheetah_2l/HalfCheetah-v1-checkpoint-step60-20240607163833.pt

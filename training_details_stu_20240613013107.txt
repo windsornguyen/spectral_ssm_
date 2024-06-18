@@ -1,0 +1,4 @@
+Training completed for stu on HalfCheetah-v1 at: 2024-06-13 01:31:07.894637
+Best model step: 360
+Best model validation loss: 39.2307
+Best model checkpoint saved at: checkpoints/stu-HalfCheetah-v1-chkpt-step360-20240613010450.safetensors

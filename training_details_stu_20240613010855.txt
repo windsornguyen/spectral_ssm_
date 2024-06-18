@@ -1,0 +1,4 @@
+Training completed for stu on Walker2D-v1 at: 2024-06-13 01:08:55.020341
+Best model step: 510
+Best model validation loss: 12.1251
+Best model checkpoint saved at: checkpoints/stu-Walker2D-v1-chkpt-step510-20240613010633.safetensors
