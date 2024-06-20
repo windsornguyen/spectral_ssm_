@@ -1,4 +1,0 @@
-Training completed for transformer on Ant-v1 at: 2024-06-12 20:40:40.698731
-Best model step: 9
-Best model validation loss: 144.5919
-Best model checkpoint saved at: checkpoints/transformer-Ant-v1-chkpt-step9-20240612204040.safetensors

@@ -410,11 +410,11 @@ class TransformerBlock(nn.Module):
 
 @dataclass
 class TransformerConfigs:
-    n_layer: int = 6
-    n_head: int = 6
-    n_embd: int = 37  # Ant-v1 default
+    n_layer: int = 2
+    n_head: int = 1
+    n_embd: int = 18
     scale: int = 4
-    d_out: int = 29  # Ant-v1 default
+    d_out: int = 18
     max_len: int = 1_000
     bias: bool = False  # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     dropout: float = 0.25

@@ -1,4 +1,0 @@
-Training completed at: 2024-06-03 15:29:38.749739
-Best model step: 200
-Best model validation loss: 4.2110
-Best model checkpoint saved at: checkpoints/checkpoint-step200-20240603140631.pt

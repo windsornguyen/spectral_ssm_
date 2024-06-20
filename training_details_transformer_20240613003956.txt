@@ -1,4 +1,0 @@
-Training completed for transformer on HalfCheetah-v1 at: 2024-06-13 00:39:56.566926
-Best model step: 420
-Best model validation loss: 187.9096
-Best model checkpoint saved at: checkpoints/transformer-HalfCheetah-v1-chkpt-step420-20240613003356.safetensors

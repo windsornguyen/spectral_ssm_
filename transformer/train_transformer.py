@@ -21,6 +21,9 @@ from safetensors import safe_open
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
+import sys
+sys.path.insert(0, '/scratch/gpfs/yl3030/spectral_ssm')
+
 from stu import experiment as exp, optimizer as opt
 from transformer.model import Transformer, TransformerConfigs
 from stu.physics.physics_data import get_dataloader
@@ -127,19 +130,19 @@ def main() -> None:
         5 // world_size
     )  # scale batch size for distributed training
     max_len = 1_000
-    num_epochs: int = 1
+    num_epochs: int = 3
     eval_period: int = 30
     patience: int = 15
-    checkpoint_dir: str = 'checkpoints'
+    checkpoint_dir: str = 'checkpoints_halfcheetah_obs_2l'
 
     # Optimizer hyperparameters
     weight_decay: float = 1e-1
 
     # Transformer hyperparameters
-    n_layer: int = 6
-    d_out = 29
+    n_layer: int = 2
+    d_out = 18
     n_head: int = 1  # Constraint: n_embd % n_head == 0
-    n_embd = 37
+    n_embd = 18
     scale = 16  # 4 is default
     dropout = 0.25
     bias = False
@@ -150,14 +153,14 @@ def main() -> None:
     if main_process:
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir, exist_ok=True)
-        if not os.path.exists('plots/'):
-            os.makedirs('plots/')
+        if not os.path.exists('plots_halfcheetah_obs_2l/'):
+            os.makedirs('plots_halfcheetah_obs_2l/')
 
     # Data loading
-    controller = 'Ant-v1'
-    train_inputs = f'../data/{controller}/train_inputs.npy'
+    controller = 'HalfCheetah-v1'
+    train_inputs = f'../data/{controller}/train_inputs_obs.npy'
     train_targets = f'../data/{controller}/train_targets.npy'
-    val_inputs = f'../data/{controller}/val_inputs.npy'
+    val_inputs = f'../data/{controller}/val_inputs_obs.npy'
     val_targets = f'../data/{controller}/val_targets.npy'
     print(f'Training on {controller} task.')
 
@@ -371,24 +374,24 @@ def main() -> None:
                             if main_process:
                                 # Save the data points to files
                                 np.save(
-                                    'plots/transformer_train_losses.npy',
+                                    'plots_halfcheetah_obs_2l/transformer_train_losses.npy',
                                     train_losses,
                                 )
                                 np.save(
-                                    'plots/transformer_val_losses.npy',
+                                    'plots_halfcheetah_obs_2l/transformer_val_losses.npy',
                                     val_losses,
                                 )
                                 np.save(
-                                    'plots/transformer_val_time_steps.npy',
+                                    'plots_halfcheetah_obs_2l/transformer_val_time_steps.npy',
                                     val_time_steps,
                                 )
                                 np.save(
-                                    'plots/transformer_grad_norms.npy',
+                                    'plots_halfcheetah_obs_2l/transformer_grad_norms.npy',
                                     grad_norms,
                                 )
                                 for metric, losses in metric_losses.items():
                                     np.save(
-                                        f'plots/transformer_{metric}.npy',
+                                        f'plots_halfcheetah_obs_2l/transformer_{metric}.npy',
                                         losses,
                                     )
 
@@ -446,12 +449,12 @@ def main() -> None:
             )
 
         # Save the data points to files
-        np.save('plots/transformer_train_losses.npy', train_losses)
-        np.save('plots/transformer_val_losses.npy', val_losses)
-        np.save('plots/transformer_val_time_steps.npy', val_time_steps)
-        np.save('plots/transformer_grad_norms.npy', grad_norms)
+        np.save('plots_halfcheetah_obs_2l/transformer_train_losses.npy', train_losses)
+        np.save('plots_halfcheetah_obs_2l/transformer_val_losses.npy', val_losses)
+        np.save('plots_halfcheetah_obs_2l/transformer_val_time_steps.npy', val_time_steps)
+        np.save('plots_halfcheetah_obs_2l/transformer_grad_norms.npy', grad_norms)
         for metric, losses in metric_losses.items():
-            np.save(f'plots/transformer_{metric}.npy', losses)
+            np.save(f'plots_halfcheetah_obs_2l/transformer_{metric}.npy', losses)
 
         print('Lyla: It was a pleasure assisting you. Until next time!')
 

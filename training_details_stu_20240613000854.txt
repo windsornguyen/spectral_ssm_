@@ -1,4 +1,0 @@
-Training completed for stu on Ant-v1 at: 2024-06-13 00:08:54.751634
-Best model step: 480
-Best model validation loss: 9.7224
-Best model checkpoint saved at: checkpoints/stu-Ant-v1-chkpt-step480-20240612235406.safetensors

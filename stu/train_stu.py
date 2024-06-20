@@ -22,6 +22,9 @@ from safetensors import safe_open
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 
+import sys
+sys.path.insert(0, '/scratch/gpfs/yl3030/spectral_ssm')
+
 from losses.loss_ant import AntLoss
 from losses.loss_cheetah import HalfCheetahLoss
 from losses.loss_walker import Walker2DLoss
@@ -200,15 +203,15 @@ def main() -> None:
 
     # General training hyperparameters
     train_batch_size: int = (
-        5 // world_size
+        10 // world_size
     )  # scale batch size for distributed training
     val_batch_size: int = (
-        5 // world_size
+        10 // world_size
     )  # scale batch size for distributed training
     num_epochs: int = 3
     eval_period: int = 30
     patience: int = 15
-    checkpoint_dir: str = 'checkpoints'
+    checkpoint_dir: str = 'checkpoints_halfcheetah_obs_2l_10bsz'
 
     # Optimizer hyperparameters
     weight_decay: float = 1e-1
@@ -216,9 +219,9 @@ def main() -> None:
     m_y_weight_decay: float = 0
 
     # STU hyperparameters
-    d_model: int = 37
-    d_target: int = 29
-    num_layers: int = 6
+    d_model: int = 18
+    d_target: int = 18
+    num_layers: int = 2
     dropout: float = 0.25
     input_len: int = 1000
     num_eigh: int = 24
@@ -230,13 +233,13 @@ def main() -> None:
     if main_process:
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir, exist_ok=True)
-        if not os.path.exists('plots/'):
-            os.makedirs('plots/')
+        if not os.path.exists('plots_halfcheetah_obs_2l_10bsz/'):
+            os.makedirs('plots_halfcheetah_obs_2l_10bsz/')
 
-    controller = 'Ant-v1'
-    train_inputs = f'../data/{controller}/train_inputs.npy'
+    controller = 'HalfCheetah-v1'
+    train_inputs = f'../data/{controller}/train_inputs_obs.npy'
     train_targets = f'../data/{controller}/train_targets.npy'
-    val_inputs = f'../data/{controller}/val_inputs.npy'
+    val_inputs = f'../data/{controller}/val_inputs_obs.npy'
     val_targets = f'../data/{controller}/val_targets.npy'
 
     # Get dataloaders
@@ -262,7 +265,9 @@ def main() -> None:
         num_workers=num_workers,
         pin_memory=True
     )
-    num_steps: int = len(train_loader) * num_epochs
+
+    steps_per_epoch = len(train_loader)
+    num_steps: int = steps_per_epoch * num_epochs
     warmup_steps: int = num_steps // 10
 
     loss_fn = {
@@ -315,12 +320,9 @@ def main() -> None:
 
     best_val_loss = float('inf')
     patient_counter = 0
-    eval_periods_without_improvement = 0
     best_model_step = 0
-    best_model_metrics = None
     best_checkpoint = None
 
-    # Initialize lists to store losses and metrics for each model
     train_losses = []
     val_losses = []
     val_time_steps = []
@@ -333,26 +335,24 @@ def main() -> None:
         'angular_velocity_loss': [],
     }
 
-    msg = f"Lyla: We'll be training on the {controller} task with"
-
     if main_process:
+        msg = f"Lyla: We'll be training the STU model on the {controller} task with"
         if world_size > 1:
             print(
-                f'{msg} {device} on rank {rank + 1}/{world_size}, '
-                f'utilizing {world_size} distributed processes.'
+                f'{msg} {device} on rank {rank + 1}/{world_size}'
+                f' utilizing {world_size} distributed processes.'
             )
         else:
             print(f'{msg} {device} today.')
 
-    # Prepare progress bars for training
     pbar = tqdm(
-        range(num_epochs * len(train_loader)),
-        desc=f'Training spectral_ssm',
+        range(num_epochs * steps_per_epoch),
+        desc='Training',
         unit='step',
     )
 
-    # Training loop!
-    for _ in range(num_epochs):
+    # Training loop
+    for epoch in range(num_epochs):
         for step, (inputs, targets) in enumerate(train_loader):
             train_metrics = experiment.step(inputs, targets)
 
@@ -367,45 +367,34 @@ def main() -> None:
                     for k in train_metrics.keys()
                 }
 
-            # Append the losses and metrics for each model
+            relative_time_step = step + (epoch * steps_per_epoch)
             train_losses.append(train_metrics['loss'])
             grad_norms.append(train_metrics['grad_norm'])
             for metric in metric_losses:
                 if metric in train_metrics:
-                    metric_losses[metric].append(
-                        train_metrics[metric]
-                    )
+                    metric_losses[metric].append(train_metrics[metric])
 
             if main_process:
                 current_lrs = experiment.scheduler.get_last_lr()
                 default_lr = current_lrs[0]
-                m_y_lr = current_lrs[1] if len(current_lrs) > 1 else None
                 lrs = f'{default_lr:.2e}'
-                if m_y_lr is not None:
-                    lrs += f', m_y_lr={m_y_lr:.2e}'
                 postfix_dict = {
-                    f'tr_loss': train_metrics['loss'],
-                    f'val_loss': val_losses[-1]
-                    if len(val_losses) > 0
-                    else None,
-                    f'grd_nrm': train_metrics['grad_norm'],
-                    f'lr': lrs,
+                    'tr_loss': train_metrics['loss'],
+                    'val_loss': val_losses[-1] if len(val_losses) > 0 else None,
+                    'grd_nrm': train_metrics['grad_norm'],
+                    'lr': lrs,
                 }
                 for metric in train_metrics:
                     if metric in metric_losses:
-                        postfix_dict[f'{metric}'] = (
-                            train_metrics[metric]
-                        )
+                        postfix_dict[metric] = train_metrics[metric]
                 pbar.set_postfix(postfix_dict)
-
-            if main_process:
                 pbar.update(1)
 
-            if step > 0 and step % eval_period == 0:
+            if (step > 0 and step % eval_period == 0) or (step == 0) or (step == steps_per_epoch - 1):
                 if main_process:
-                    colored_print(f'\nStep: {step}', Colors.BOLD)
+                    colored_print(f'\nStep: {relative_time_step}', Colors.BOLD)
                     colored_print(
-                        f'\n - Train Loss After {eval_period} Steps: {train_losses[-1]:.4f}',
+                        f'\nSTU - Train Loss After {eval_period} Steps: {train_losses[-1]:.4f}',
                         Colors.OKBLUE,
                     )
 
@@ -423,11 +412,11 @@ def main() -> None:
                     }
 
                 val_losses.append(val_metrics['loss'])
-                val_time_steps.append(step)
+                val_time_steps.append(relative_time_step)
 
                 if main_process:
                     colored_print(
-                        f'\nLyla: Evaluating the model on step {step} Loss: {val_metrics["loss"]:.2f}.',
+                        f'\nLyla: Evaluating the STU model on step {step} Loss: {val_metrics["loss"]:.2f}.',
                         Colors.OKCYAN,
                     )
 
@@ -437,7 +426,7 @@ def main() -> None:
                         best_model_step = step
                         patient_counter = 0
                         timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-                        checkpoint_filename = f'{controller}-chkpt-step{step}-{timestamp}.safetensors'
+                        checkpoint_filename = f'stu-{controller}-chkpt-step{step}-{timestamp}.safetensors'
                         checkpoint_path = os.path.join(
                             checkpoint_dir, checkpoint_filename
                         )
@@ -447,59 +436,57 @@ def main() -> None:
                             # Save the model on the main process and broadcast it to all processes
                             if main_process:
                                 save_file(
-                                    spectral_ssm.state_dict(),
+                                    stu_model.module.state_dict(),
                                     checkpoint_path,
                                 )
                             dist.barrier()
                             map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-                            spectral_ssm.load_state_dict(
-                                safetensors.load_file(
-                                    checkpoint_path, device=map_location
-                                )
+                            stu_model.load_state_dict(
+                                load_file(checkpoint_path, device=map_location)
                             )
                         else:
                             save_file(
-                                spectral_ssm.state_dict(),
+                                stu_model.state_dict(),
                                 checkpoint_path,
                             )
 
                         colored_print(
-                            f'Lyla: Wow! We have a new personal best for the model at step {step}. The validation loss improved to: {val_loss:.4f}! Checkpoint saved as {checkpoint_path}',
+                            f'Lyla: Wow! We have a new personal best for the STU model at step {step}. The validation loss improved to: {val_loss:.4f}! Checkpoint saved as {checkpoint_path}',
                             Colors.OKGREEN,
                         )
                     else:
                         patient_counter += 1
                         colored_print(
-                            f'Lyla: No improvement in validation loss for the model for {patient_counter} eval periods. Current best loss: {best_val_loss:.4f}.',
+                            f'Lyla: No improvement in validation loss for the STU model for {patient_counter} eval periods. Current best loss: {best_val_loss:.4f}.',
                             Colors.WARNING,
                         )
 
                         if patient_counter >= patience:
                             colored_print(
-                                f'Lyla: We have reached the patience limit of {patience} for the model. Stopping the training early at step {step}...',
+                                f'Lyla: We have reached the patience limit of {patience} for the STU model. Stopping the training early at step {step}...',
                                 Colors.FAIL,
                             )
                             if main_process:
                                 # Save the data points to files
                                 np.save(
-                                    'plots/ssm_train_losses.npy',
+                                    'plots_halfcheetah_obs_2l_10bsz/stu_train_losses.npy',
                                     train_losses,
                                 )
                                 np.save(
-                                    'plots/ssm_val_losses.npy',
+                                    'plots_halfcheetah_obs_2l_10bsz/stu_val_losses.npy',
                                     val_losses,
                                 )
                                 np.save(
-                                    'plots/ssm_val_time_steps.npy',
+                                    'plots_halfcheetah_obs_2l_10bsz/stu_val_time_steps.npy',
                                     val_time_steps,
                                 )
                                 np.save(
-                                    'plots/ssm_grad_norms.npy',
+                                    'plots_halfcheetah_obs_2l_10bsz/stu_grad_norms.npy',
                                     grad_norms,
                                 )
                                 for metric, losses in metric_losses.items():
                                     np.save(
-                                        f'plots/ssm_{metric}.npy',
+                                        f'plots_halfcheetah_obs_2l_10bsz/stu_{metric}.npy',
                                         losses,
                                     )
 
@@ -511,9 +498,7 @@ def main() -> None:
 
     if main_process:
         if best_checkpoint:
-            best_checkpoint_path = os.path.join(
-                checkpoint_dir, best_checkpoint
-            )
+            best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)
 
             if dist.is_initialized():
                 # Load the best checkpoint on the main process and broadcast it to all processes
@@ -522,57 +507,49 @@ def main() -> None:
                         best_checkpoint_path, framework='pt', device=rank
                     ) as f:
                         state_dict = {k: f.get_tensor(k) for k in f.keys()}
-                        spectral_ssm.load_state_dict(state_dict)
+                        stu_model.load_state_dict(state_dict)
                 dist.barrier()
             else:
                 with safe_open(
                     best_checkpoint_path, framework='pt', device='cpu'
                 ) as f:
                     state_dict = {k: f.get_tensor(k) for k in f.keys()}
-                    spectral_ssm.load_state_dict(state_dict)
+                    stu_model.load_state_dict(state_dict)
 
             print(
-                f"\nLyla: Here's the best model information for the model:"
+                f"\nLyla: Here's the best model information for the STU model:"
             )
             print(f'    Best model at step {best_model_step}')
-            print(
-                f'    Best model validation loss: {best_val_loss:.4f}'
-            )
-            print(
-                f'    Best model checkpoint saved at: {best_checkpoint_path}'
-            )
+            print(f'    Best model validation loss: {best_val_loss:.4f}')
+            print(f'    Best model checkpoint saved at: {best_checkpoint_path}')
 
             # Save the training details to a file
             timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-            training_details = (
-                f'training_details_{timestamp}.txt'
-            )
+            training_details = f'training_details_stu_{timestamp}.txt'
             with open(training_details, 'w') as f:
                 f.write(
-                    f'Training completed for on {controller} at: {datetime.now()}\n'
+                    f'Training completed for STU on {controller} at: {datetime.now()}\n'
                 )
                 f.write(f'Best model step: {best_model_step}\n')
-                f.write(
-                    f'Best model validation loss: {best_val_loss:.4f}\n'
-                )
+                f.write(f'Best model validation loss: {best_val_loss:.4f}\n')
                 f.write(
                     f'Best model checkpoint saved at: {best_checkpoint_path}\n'
                 )
             print(
-                f'Lyla: Congratulations on completing the training run for the model! Details are saved in {training_details}.'
+                f'Lyla: Congratulations on completing the training run for the STU model! Details are saved in {training_details}.'
             )
         else:
             print(
-                f'\nLyla: No best checkpoint found for the model. The model did not improve during training.'
+                f'\nLyla: No best checkpoint found for the STU model. The model did not improve during training.'
             )
 
         # Save the data points to files
-        np.save('plots/ssm_train_losses.npy', train_losses)
-        np.save('plots/ssm_val_losses.npy', val_losses)
-        np.save('plots/ssm_val_time_steps.npy', val_time_steps)
-        np.save('plots/ssm_grad_norms.npy', grad_norms)
+        np.save('plots_halfcheetah_obs_2l_10bsz/stu_train_losses.npy', train_losses)
+        np.save('plots_halfcheetah_obs_2l_10bsz/stu_val_losses.npy', val_losses)
+        np.save('plots_halfcheetah_obs_2l_10bsz/stu_val_time_steps.npy', val_time_steps)
+        np.save('plots_halfcheetah_obs_2l_10bsz/stu_grad_norms.npy', grad_norms)
         for metric, losses in metric_losses.items():
-            np.save(f'plots/ssm_{metric}.npy', losses)
+            np.save(f'plots_halfcheetah_obs_2l_10bsz/stu_{metric}.npy', losses)
 
         print('Lyla: It was a pleasure assisting you. Until next time!')
 

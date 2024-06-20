@@ -15,9 +15,9 @@ from stu import stu_utils
 
 @dataclass
 class STUConfigs:
-    d_model: int = 24
+    d_model: int = 18
     d_target: int = 18
-    num_layers: int = 6
+    num_layers: int = 2
     dropout: float = 0.25
     input_len: int = 1000
     num_eigh: int = 24
