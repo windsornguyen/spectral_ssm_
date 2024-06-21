@@ -1,0 +1,4 @@
+Training completed for SSSM on mujoco-v3 with Walker2D-v1at: 2024-06-21 17:36:23.505769
+Best model step: 0
+Best model validation loss: 1.2062
+Best model checkpoint saved at: checkpoints/sssm-Walker2D-v1-chkpt-step0-20240621173621.safetensors

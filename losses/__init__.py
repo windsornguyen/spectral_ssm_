@@ -3,4 +3,4 @@
 # File: __init__.py
 # ==============================================================================#
 
-"""General utility functions."""
+"""A package for custom loss functions."""

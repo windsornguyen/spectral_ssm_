@@ -6,6 +6,7 @@ license = "Apache 2.0"
 homepage = "https://arxiv.org/abs/2312.06837"
 repository = "https://github.com/windsornguyen/spectral_ssm"
 authors = [
+    # In alphabetical order, by last name:
     "Yagiz Devre",
     "Evan Dogariu",
     "Chiara von Gerlach",
@@ -62,7 +63,7 @@ exclude = [
     "venv",
 ]
 
-line-length = 80
+line-length = 88
 indent-width = 4
 
 target-version = "py311"
@@ -80,10 +81,10 @@ unfixable = []
 
 [tool.ruff.lint.flake8-quotes]
 docstring-quotes = "double" # Enforce double quotes for docstrings
-inline-quotes = "single"    # Enforce single quotes for inline strings
+inline-quotes = "double"    # Enforce double quotes for inline strings
 
 [tool.ruff.format]
-quote-style = "single" # Default to single quotes for auto-formatting
+quote-style = "double" # Default to double quotes for auto-formatting
 
 # Like Black, indent with spaces, rather than tabs.
 indent-style = "space"

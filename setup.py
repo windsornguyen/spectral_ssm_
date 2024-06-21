@@ -43,7 +43,9 @@ setuptools.setup(
         'time series',
         'dynamical systems',
     ],
-    author=[
+    author=
+    [
+        # In alphabetical order, by last name:
         'Yagiz Devre',
         'Evan Dogariu',
         'Chiara von Gerlach',
