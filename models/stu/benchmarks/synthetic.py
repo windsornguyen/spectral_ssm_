@@ -8,7 +8,6 @@
 import torch
 from torch.utils.data import TensorDataset
 
-
 def generate_copy(
     num_examples: int = 5,
     num_categories: int = 10,

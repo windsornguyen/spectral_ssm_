@@ -1,30 +1,41 @@
 [tool.poetry]
 name = "spectral_ssm"
 version = "1.0"
-description = "Dependency manager Google DeepMind Spectral State Space model"
-authors = ["Yagiz Devre", "Evan Dogariu", "Chiara von Gerlach", "Isabel Liu", "Windsor Nguyen", "Dwaipayan Saha"]
+description = "Dependency manager Google DeepMind's Spectral State Space Model"
 license = "Apache 2.0"
 homepage = "https://arxiv.org/abs/2312.06837"
 repository = "https://github.com/windsornguyen/spectral_ssm"
-keywords = ["spectral state space model"]
+authors = [
+    # In alphabetical order, by last name:
+    "Yagiz Devre",
+    "Evan Dogariu",
+    "Chiara von Gerlach",
+    "Isabel Liu",
+    "Windsor Nguyen",
+    "Dwaipayan Saha",
+]
+keywords = [
+    "pytorch",
+    "state space model",
+    "spectral filtering",
+    "state space model",
+    "deep learning",
+    "machine learning",
+    "time series",
+    "dynamical systems",
+]
+
 
 [tool.poetry.dependencies]
-python = "^3.9, <=3.11.9"
-torch = "2.2.2"
-torchvision = "0.17.2"
-typing-extensions = "4.9.0"
-pyyaml = "6.0.1"
-pillow = "10.2.0"
-numpy = "1.26.4"
-sympy = "1.12"
-tqdm = "^4.66.2"
+python = "^3.8"
+torch = "^2.0.0"
 
 [tool.poetry.dev-dependencies]
 # See `ruff help` for more on Ruff's top-level commands.
-ruff = "^0.3.7"
+ruff = "^0.4.8"
 
 [tool.poetry.group.dev.dependencies]
-ipykernel = "^6.29.3"
+ipykernel = "^6.29.4"
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -52,10 +63,9 @@ exclude = [
     "venv",
 ]
 
-line-length = 80
+line-length = 88
 indent-width = 4
 
-# Assuming Python 3.11+.
 target-version = "py311"
 
 [tool.ruff.lint]
@@ -70,11 +80,11 @@ fixable = ["ALL"]
 unfixable = []
 
 [tool.ruff.lint.flake8-quotes]
-docstring-quotes = "double"  # Enforce double quotes for docstrings
-inline-quotes = "single"     # Enforce single quotes for inline strings
+docstring-quotes = "double" # Enforce double quotes for docstrings
+inline-quotes = "double"    # Enforce double quotes for inline strings
 
 [tool.ruff.format]
-quote-style = "single"       # Default to single quotes for auto-formatting
+quote-style = "double" # Default to double quotes for auto-formatting
 
 # Like Black, indent with spaces, rather than tabs.
 indent-style = "space"

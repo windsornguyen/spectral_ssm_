@@ -11,7 +11,6 @@
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-
 from model import Architecture
 from synthetic import (
     generate_copy,
