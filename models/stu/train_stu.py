@@ -1,5 +1,5 @@
 # =============================================================================#
-# Authors: Isabel Liu, Yagiz Devre, Windsor Nguyen
+# Authors: Isabel Liu, Windsor Nguyen
 # File: train.py
 # =============================================================================#
 
@@ -72,11 +72,10 @@ def save_results(task, ctrl, data, name, ts, directory="results", prefix="sssm",
     return fpath
 
 
-# TODO: Change this to be the correct command.
-# To run the script: `torchrun --nproc_per_node=1 train_stu.py`
+# Example: `torchrun -m --nproc_per_node=1 models.stu.train_stu --controller Ant-v1 --task mujoco-v3`
 def main() -> None:
     # TODO: Is set_start_method needed if we re-write the dataloader?
-    # torch.multiprocessing.set_start_method("spawn")
+    torch.multiprocessing.set_start_method("spawn")
     torch.set_float32_matmul_precision("high")  # Enable CUDA TensorFloat-32
 
     # Process command line flags
@@ -135,14 +134,15 @@ def main() -> None:
             os.makedirs("results/")
 
     # Shared hyperparameters
-    n_layers: int = 6
+    n_layers: int = 12
     scale: int = 4
     bias: bool = False
     dropout: float = 0.10
     num_eigh: int = 24
     auto_reg_k_u: int = 3
-    auto_reg_k_y: int = 32  # TODO: Maybe change this back to 2 (it was 32 in the paper for CIFAR-10 and Pathfinder?)
-    learnable_m_y: bool = (True,)
+    auto_reg_k_y: int = 2
+    learnable_m_y: bool = True
+
     if not task["mujoco-v3"]:
         if controller == "Ant-v1":
             loss_fn = AntLoss()
@@ -221,7 +221,7 @@ def main() -> None:
         )
 
     model = SSSM(configs).to(device)
-    # model = torch.compile(model)
+    model = torch.compile(model)
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank], gradient_as_bucket_view=True)
     stu_model = model.module if world_size > 1 else model
@@ -294,7 +294,7 @@ def main() -> None:
 
     # General training hyperparameters
     training_stu = True
-    num_epochs: int = 3
+    num_epochs: int = 9
     steps_per_epoch = len(train_loader)
     num_steps: int = steps_per_epoch * num_epochs
     dilation: int = 1
@@ -314,7 +314,7 @@ def main() -> None:
     best_checkpoint = None
 
     # Number of non-improving eval periods before early stopping
-    patience: int = 5
+    patience: int = 10
 
     # Optimizer hyperparameters
     weight_decay: float = 1e-1

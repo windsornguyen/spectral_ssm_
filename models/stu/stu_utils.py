@@ -8,7 +8,7 @@
 import torch
 
 
-@torch.jit.script
+
 def get_hankel_matrix(n: int) -> torch.Tensor:
     """
     Generate a spectral Hankel matrix.
@@ -25,7 +25,7 @@ def get_hankel_matrix(n: int) -> torch.Tensor:
     return z
 
 
-@torch.jit.script
+
 def get_top_hankel_eigh(
     n: int, 
     k: int, 
@@ -47,7 +47,7 @@ def get_top_hankel_eigh(
     return eig_vals[-k:], eig_vecs[:, -k:]  # -> [k, (n, k)]
 
 
-@torch.jit.script
+
 def get_random_real_matrix(
     shape: list[int],
     scaling: float,
@@ -74,7 +74,7 @@ def get_random_real_matrix(
 
 
 # TODO: Do shape analysis on this function
-@torch.jit.script
+
 def shift(x: torch.Tensor) -> torch.Tensor:
     """
     Shift time axis by one to align x_{t-1} with x_t.
@@ -111,7 +111,7 @@ def nearest_power_of_2(x: int):
     return 1 << (length - 1) if x == 1 << (length - 1) else 1 << length
 
 
-@torch.jit.script
+
 def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     """
     Compute convolution to project input sequences into the spectral basis.
@@ -165,7 +165,7 @@ def conv(v: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
     return z[:, :sl]
 
 
-@torch.jit.script
+
 def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     """
     Computes a sequence of y_t given a series of deltas and a transition matrix m_y.
@@ -212,7 +212,7 @@ def compute_y_t(m_y: torch.Tensor, deltas: torch.Tensor) -> torch.Tensor:
     return ys
 
 
-@torch.jit.script
+
 def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     """
     Compute the auto-regressive component of spectral SSM.
@@ -246,7 +246,7 @@ def compute_ar_x_preds(w: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
     return torch.sum(rolled_o * mask, dim=1)
 
 
-@torch.jit.script
+
 def compute_x_tilde(
     inputs: torch.Tensor, eigh: tuple[torch.Tensor, torch.Tensor]
 ) -> torch.Tensor:

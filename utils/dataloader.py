@@ -61,8 +61,8 @@ class Dataloader(Dataset):
                 dim=-1,
             )
 
-        input_frames = features[: -self.shift]
-        target_frames = features[self.shift :]
+        input_frames = features[:-self.shift]
+        target_frames = features[self.shift:]
 
         return input_frames, target_frames
 

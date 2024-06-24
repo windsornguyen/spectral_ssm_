@@ -1,5 +1,5 @@
 # ==============================================================================#
-# Authors: Windsor Nguyen, Dwaipayan Saha, Isabel Liu, Yagiz Devre
+# Authors: Windsor Nguyen, Dwaipayan Saha, Isabel Liu
 # File: model.py
 # ==============================================================================#
 
@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from models.stu import stu_utils
 from time import time
 from utils.swiglu import SwiGLU
+from tqdm import tqdm
 
 
 @dataclass
@@ -82,28 +83,14 @@ class STU(nn.Module):
 
         x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs))
         x_tilde = self.stu_dropout(x_tilde)
+
         delta_phi = x_tilde @ self.m_phi
 
-        ### AUTO-REGRESSIVE PART ###
+        delta_ar_u = stu_utils.compute_ar_x_preds(self.m_u, inputs)
 
-        # # print(
-        # #     f'Time for delta_phi computation: {time() - start_time:.4f}s'
-        # # )
-        # # start_time = time()  # Reset timing
-        # delta_ar_u = stu_utils.compute_ar_x_preds(self.m_u, inputs)
-        # # print(
-        # #     f'Time for delta_ar_u computation: {time() - start_time:.4f}s'
-        # # )
-        # # start_time = time()  # Reset timing
-        # y_t = stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u)
-        # # print(f'Time for y_t computation: {time() - start_time:.4f}s')
+        y_t = stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u)
 
-        # return y_t
-
-        ### END AUTO-REGRESSIVE PART ###
-
-        y_t = self.resid_dropout(delta_phi)
-        return y_t
+        return self.resid_dropout(y_t)
 
 
 class FFN(nn.Module):
@@ -138,8 +125,8 @@ class STUBlock(nn.Module):
         self.ffn = FFN(configs)
 
     def forward(self, x):
-        x = self.stu(self.ln_1(x))
-        x = self.ffn(self.ln_2(x))
+        x = x + self.stu(self.ln_1(x))
+        x = x + self.ffn(self.ln_2(x))
         return x
 
 
@@ -198,9 +185,11 @@ class SSSM(nn.Module):
         pos_emb = self.stu.wpe(pos)
 
         # Add positional embeddings to input
-        x = x + self.stu.dropout(pos_emb.unsqueeze(0).expand(bsz, -1, -1))
+        x = x + pos_emb.unsqueeze(0)
+        x = self.stu.dropout(x)
+
         for stu_block in self.stu.hidden:
-            x = x + stu_block(x)
+            x = stu_block(x)
         x = self.stu.ln_f(x)
         preds = self.task_head(x)
 
@@ -210,8 +199,10 @@ class SSSM(nn.Module):
             )
             return preds, (loss, metrics)
         else:
+            # print("Is targets none?", targets is None)
             loss = self.loss_fn(preds, targets) if targets is not None else None
-
+            # print("loss is", loss)
+            # print('preds are', preds[:10])
             return preds, (loss,)
 
     def _init_weights(self, module):
@@ -326,57 +317,98 @@ class SSSM(nn.Module):
 
         return flops
 
-    def predict(
+    def predict_frames(
         self,
         inputs: torch.Tensor,
         targets: torch.Tensor,
-        init: int = 0,
-        t: int = 1,
-    ) -> tuple[list[float], tuple[torch.Tensor, dict[str, float]]]:
+        init: int = 100,
+        steps: int = 50,
+        ar_steps: int = 300,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, dict[str, torch.Tensor]]]:
         """
-        Predicts the next states in trajectories and computes losses against the targets.
+        Predicts the video frame.
 
         Args:
-            inputs (torch.Tensor): A tensor of shape [num_trajectories, seq_len, d_in].
-            targets (torch.Tensor): A tensor of shape [num_trajectories, seq_len, d_out].
-            init (int): The index of the initial state to start at.
-            t (int): The number of time steps to predict.
+            inputs (torch.Tensor): A tensor of input videos with shape [num_videos, sl, d_in].
+            targets (torch.Tensor): A tensor of target videos with shape [num_videos, sl, d_in].
+            init (int): The index of the initial state to start the prediction from. Defaults to 0.
+            steps (int): The number of time steps to predict. Defaults to 50.
+            ar_steps (int): The number of autoregressive steps to take before using the ground truth state.
+                Defaults to 1, which means the model always uses the ground truth state to predict the next state.
+                If set to sl, the model always uses the last predicted state to predict the next state.
 
         Returns:
-            A tuple containing the list of predicted states after `t` time steps and
-            a tuple containing the total loss and a dictionary of metrics.
+            tuple[torch.Tensor, tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor]]:
+                - preds (torch.Tensor): A tensor of predicted states for each video after `steps` time steps,
+                    with shape [num_videos, steps, d_out].
+                - loss (tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor]): A tuple containing:
+                    - avg_loss (torch.Tensor): The mean loss over time steps and videos.
+                    - video_losses (torch.Tensor): A tensor of losses for each video at each time step,
+                        with shape [num_videos, steps].
         """
-        device = inputs.device
-        num_trajectories, seq_len, d_in = inputs.size()
+        device = next(self.parameters()).device
+        print(f"Predicting on {device}.")
+        num_videos, sl, d_in = inputs.size()
 
-        predicted_sequence = []
-        total_loss = torch.tensor(0.0, device=device)
-        metrics = {
-            "loss": [],
-            "coordinate_loss": [],
-            "orientation_loss": [],
-            "angle_loss": [],
-            "coordinate_velocity_loss": [],
-            "angular_velocity_loss": [],
-        }
+        # Initialize the predicted sequences and losses
+        ar_sequences = inputs.clone()
+        preds = torch.zeros(num_videos, steps, d_in, device=device)
+        video_losses = torch.zeros(num_videos, steps, device=device)
 
-        for i in range(t):
-            current_input_state = inputs[:, init + i, :].unsqueeze(1)
-            current_target_state = targets[:, init + i, :].unsqueeze(1)
+        i = init
+        with tqdm(total=steps, desc="Predicting", unit="step") as pbar:
+            while i < init + steps:
+                window_start = max(0, i - self.configs.sl + 1)
 
-            # Predict the next state using the model
-            next_state = self.model(current_input_state)
-            loss, metric = self.loss_fn(next_state, current_target_state)
+                input_window = ar_sequences[:, window_start : i + 1, :]
+                target_window = targets[:, window_start : i + 1, :]
+                preds_step, (step_loss,) = self.forward(input_window, target_window)
 
-            predicted_sequence.append(next_state.squeeze(1).tolist())
+                preds[:, i - init, :] = preds_step[:, -1, :]
+                video_losses[:, i - init] = step_loss
 
-            # Accumulate the metrics
-            for key in metrics:
-                metrics[key].append(metric[key])
+                # Update autoregressive sequences for the next step
+                if i < init + steps - 1:
+                    next_step = i + 1
+                    if next_step < sl:
+                        next_input = (
+                            preds[:, i - init, :]
+                            if (i - init + 1) % ar_steps != 0
+                            else inputs[:, next_step, :]
+                        )
+                        ar_sequences[:, next_step, :] = next_input
+                    else:
+                        ar_sequences = torch.cat(
+                            [
+                                ar_sequences[:, 1:, :],
+                                preds[:, i - init : i - init + 1, :],
+                            ],
+                            dim=1,
+                        )
 
-            # Accumulate the losses
-            total_loss += loss.item()
+                i += 1
+                pbar.update(1)
 
-        total_loss /= t
+        # # If we've reached the end of the input sequence but still have steps to predict,
+        # # use the last predicted state as input (we need to hallucinate and autoregressively predict)
+        # for step in range(sl - init, steps):
+        #     xs = ar_sequences[:, -1, :].unsqueeze(1)
+        #     ys = None
 
-        return predicted_sequence, (total_loss, metrics)
+        #     preds_step, step_loss = self.forward(xs, ys)
+
+        #     preds[:, i, :] = preds_step[:, -1, :]
+
+        #     # Update autoregressive sequences for each video independently
+        #     if step < steps - 1:
+        #         for video_idx in range(num_videos):
+        #             next_input = ar_sequences[video_idx, -1, :].clone()
+        #             next_input = preds[video_idx, i, :]
+        #             ar_sequences[video_idx] = ar_sequences[video_idx, step + 1 + init, :] = next_input
+
+        #     video_losses[:, i] = step_loss
+
+        # Calculate average losses and metrics across videos
+        avg_loss = video_losses.mean()
+
+        return preds, (avg_loss, video_losses)

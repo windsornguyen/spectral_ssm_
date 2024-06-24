@@ -39,39 +39,35 @@ class CausalSelfAttention(nn.Module):
     https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
     """
 
-    def __init__(self, config):
+    def __init__(self, configs):
         super(CausalSelfAttention, self).__init__()
-        assert config.n_embd % config.n_head == 0
+        assert configs.n_embd % configs.n_head == 0
 
         # Key, query, value projections for all heads, concatenated
-        self.c_attn = nn.Linear(
-            config.n_embd, 3 * config.n_embd, bias=config.bias
-        )
+        self.c_attn = nn.Linear(configs.n_embd, 3 * configs.n_embd, bias=configs.bias)
 
         # The output projection, concatenated
-        self.c_proj = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
+        self.c_proj = nn.Linear(configs.n_embd, configs.n_embd, bias=configs.bias)
         self.c_proj.SCALE_INIT = 1
 
         # Regularization
-        self.dropout = config.dropout
+        self.dropout = configs.dropout
         self.attn_dropout = nn.Dropout(self.dropout)
         self.resid_dropout = nn.Dropout(self.dropout)
-        self.n_embd = config.n_embd
-        self.n_head = config.n_head
+        self.n_embd = configs.n_embd
+        self.n_head = configs.n_head
 
         # Flash attention makes the GPUs go brrr, but support is only in PyTorch >= 2.0
-        self.flash = hasattr(
-            torch.nn.functional, 'scaled_dot_product_attention'
-        )
+        self.flash = hasattr(torch.nn.functional, "scaled_dot_product_attention")
         if not self.flash:
             print(
-                'WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0'
+                "WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0"
             )
             # Manual implementation of the causal mask
             self.register_buffer(
-                'mask',
-                torch.tril(torch.ones(config.sl, config.sl)).view(
-                    1, 1, config.sl, config.sl
+                "mask",
+                torch.tril(torch.ones(configs.sl, configs.sl)).view(
+                    1, 1, configs.sl, configs.sl
                 ),
             )
 
@@ -117,12 +113,10 @@ class CausalSelfAttention(nn.Module):
         else:
             # Manual implementation of self-attention
             att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-            att = att.masked_fill(self.bias[:, :, :sl, :sl] == 0, float('-inf'))
+            att = att.masked_fill(self.bias[:, :, :sl, :sl] == 0, float("-inf"))
             att = F.softmax(att, dim=-1)
             att = self.attn_dropout(att)
-            y = (
-                att @ v
-            )  # (bsz, nh, sl, sl) x (bsz, nh, sl, hs) -> (bsz, nh, sl, hs)
+            y = att @ v  # (bsz, nh, sl, sl) x (bsz, nh, sl, hs) -> (bsz, nh, sl, hs)
 
         # Re-assemble / "concat" all attention head outputs side-by-side
         y = y.transpose(1, 2).contiguous().view(bsz, sl, n_embd)
@@ -154,11 +148,9 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
             x = F.pad(x, (0, 0, 0, head_padding, 0, padding), value=0.0)
 
         # Rearrange tensor to apply dilated attention
-        x = rearrange(
-            x, 'b (l r1) (r2 h) d -> b l h d r1 r2', r1=ratio, r2=ratio
-        )
+        x = rearrange(x, "b (l r1) (r2 h) d -> b l h d r1 r2", r1=ratio, r2=ratio)
         x = torch.diagonal(x, offset=0, dim1=4, dim2=5)
-        x = rearrange(x, 'b l h d r -> b l (r h) d')
+        x = rearrange(x, "b l h d r -> b l (r h) d")
 
         # Remove extra padding from heads
         if head_padding > 0:
@@ -176,19 +168,15 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
             lse = F.pad(lse, (0, 0, 0, head_padding), value=-1e8)
 
         # Rearrange tensor to convert back from sparse to dense representation
-        out = rearrange(out, 'b l (r h) d -> b l h d r', r=ratio)
+        out = rearrange(out, "b l (r h) d -> b l h d r", r=ratio)
         out = torch.diag_embed(out, offset=0, dim1=4, dim2=5)
-        out = rearrange(
-            out, 'b l h d r1 r2 -> b (r2 h) (l r1) d', r1=ratio, r2=ratio
-        )
+        out = rearrange(out, "b l h d r1 r2 -> b (r2 h) (l r1) d", r1=ratio, r2=ratio)
 
         # Handle logsumexp for sparse to dense conversion
-        lse = rearrange(lse, 'b (r h) l -> b l h r', r=ratio)
+        lse = rearrange(lse, "b (r h) l -> b l h r", r=ratio)
         lse = torch.diag_embed(lse, offset=0, dim1=3, dim2=4)
         lse = lse.masked_fill_(lse == 0, -1e8)
-        lse = rearrange(
-            lse, 'b l h r1 r2 -> b (r2 h) (l r1) 1', r1=ratio, r2=ratio
-        )
+        lse = rearrange(lse, "b l h r1 r2 -> b (r2 h) (l r1) 1", r1=ratio, r2=ratio)
 
         # Remove extra padding from heads
         if head_padding > 0:
@@ -208,7 +196,7 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
         # Gather all key-value pairs from different ranks
         x = all_gather_func(x)
         current_rank = get_data_parallel_rank()
-        x = rearrange(x, '(w b) l h d -> w b l h d', b=bsz)
+        x = rearrange(x, "(w b) l h d -> w b l h d", b=bsz)
 
         # Apply causal masking if needed
         if is_causal:
@@ -218,13 +206,11 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
                 x = x[:1] * 0
 
         # Get current segment based on rank
-        current_segment = (
-            current_rank // num_rank_per_segment * num_rank_per_segment
-        )
+        current_segment = current_rank // num_rank_per_segment * num_rank_per_segment
         x = x[current_segment : current_segment + num_rank_per_segment]
 
         # Rearrange tensor to combine segments
-        x = rearrange(x, 'w b l h d -> b (w l) h d')
+        x = rearrange(x, "w b l h d -> b (w l) h d")
         return x
 
     def gathering(
@@ -250,7 +236,7 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
             curr_x = F.pad(curr_x, (0, 0, 0, 0, 0, padding), value=0.0)
 
         # Rearrange tensor for dilated attention
-        curr_x = rearrange(curr_x, 'b (n g) h d -> (b n) g h d', g=sl)
+        curr_x = rearrange(curr_x, "b (n g) h d -> (b n) g h d", g=sl)
         curr_x = self.dense_to_sparse(curr_x, dr)
 
         # Gather key-value pairs if needed
@@ -258,7 +244,7 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
             curr_x = self.gather_kv(curr_x, _sl, seq_len, is_causal)
 
         # Rearrange tensor for attention computation
-        curr_x = rearrange(curr_x, 'b l h d -> (b h) l d')
+        curr_x = rearrange(curr_x, "b l h d -> (b h) l d")
 
         return curr_x
 
@@ -274,10 +260,10 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
             drs = drs * (len(outs) // len(drs))
 
         for dr, o, lse in zip(drs, outs, lses, strict=True):
-            o = rearrange(o, 'b l (h d) -> b l h d', h=self.n_head)
+            o = rearrange(o, "b l (h d) -> b l h d", h=self.n_head)
             o, lse = self.sparse_to_dense(o, lse, dr)
-            o = rearrange(o, '(b n) h g d -> (b h) (n g) d', b=bsz)
-            lse = rearrange(lse, '(b n) h g 1 -> (b h) (n g) 1', b=bsz)
+            o = rearrange(o, "(b n) h g d -> (b h) (n g) d", b=bsz)
+            lse = rearrange(lse, "(b n) h g 1 -> (b h) (n g) 1", b=bsz)
             o = o[:, offset : offset + seq_len]
             lse = lse[:, offset : offset + seq_len]
             all_outs.append(o)
@@ -289,11 +275,8 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
             lse_sum = torch.stack(all_lses, dim=0).sum(0)
             all_lses = [lse / lse_sum for lse in all_lses]
 
-        out = sum(
-            o * lse.type_as(o)
-            for o, lse in zip(all_outs, all_lses, strict=True)
-        )
-        out = rearrange(out, '(b h) l d -> b l (h d)', h=self.n_head)
+        out = sum(o * lse.type_as(o) for o, lse in zip(all_outs, all_lses, strict=True))
+        out = rearrange(out, "(b h) l d -> b l (h d)", h=self.n_head)
         return out
 
     def forward(self, x):
@@ -312,15 +295,9 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
         # Replace with actual segment lengths and dilation ratios
         for sl, dr in zip([128], [1], strict=True):
             # Gather key, value, and query tensors
-            ki = self.gathering(
-                k, dr, sl, is_causal=True, is_kv=True, seq_parall=True
-            )
-            vi = self.gathering(
-                v, dr, sl, is_causal=True, is_kv=True, seq_parall=True
-            )
-            qi = self.gathering(
-                q, dr, sl, is_causal=True, is_kv=False, seq_parall=True
-            )
+            ki = self.gathering(k, dr, sl, is_causal=True, is_kv=True, seq_parall=True)
+            vi = self.gathering(v, dr, sl, is_causal=True, is_kv=True, seq_parall=True)
+            qi = self.gathering(q, dr, sl, is_causal=True, is_kv=False, seq_parall=True)
 
             if self.flash:
                 out, lse = torch.nn.functional.scaled_dot_product_attention(
@@ -332,17 +309,11 @@ class DilatedCausalSelfAttention(CausalSelfAttention):
                     is_causal=True,
                 )
             else:
-                att = (qi @ ki.transpose(-2, -1)) * (
-                    1.0 / math.sqrt(ki.size(-1))
-                )
-                att = att.masked_fill(
-                    self.mask[:, :, :sl, :sl] == 0, float('-inf')
-                )
+                att = (qi @ ki.transpose(-2, -1)) * (1.0 / math.sqrt(ki.size(-1)))
+                att = att.masked_fill(self.mask[:, :, :sl, :sl] == 0, float("-inf"))
                 att = F.softmax(att, dim=-1)
                 att = self.attn_dropout(att)
-                out = (
-                    att @ vi
-                )  # (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, hs)
+                out = att @ vi  # (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, hs)
 
             outs.append(out)
             lses.append(lse)
@@ -363,17 +334,17 @@ class FFN(nn.Module):
     Simple feed-forward network.
     """
 
-    def __init__(self, config):
+    def __init__(self, configs):
         super(FFN, self).__init__()
         self.c_fc = nn.Linear(
-            config.n_embd, config.scale * config.n_embd, bias=config.bias
+            configs.n_embd, configs.scale * configs.n_embd, bias=configs.bias
         )
         # TODO: Consider implementing Squared ReLU from https://arxiv.org/pdf/2109.08668
         self.gelu = nn.GELU()
         self.c_proj = nn.Linear(
-            config.scale * config.n_embd, config.n_embd, bias=config.bias
+            configs.scale * configs.n_embd, configs.n_embd, bias=configs.bias
         )
-        self.dropout = nn.Dropout(config.dropout)
+        self.dropout = nn.Dropout(configs.dropout)
 
     def forward(self, x):
         x = self.c_fc(x)
@@ -388,18 +359,18 @@ class TransformerBlock(nn.Module):
     Single block of the Transformer.
     """
 
-    def __init__(self, config):
+    def __init__(self, configs):
         super(TransformerBlock, self).__init__()
-        self.ln_1 = nn.LayerNorm(config.n_embd, bias=config.bias)
-        self.attn = self._get_attn_type(config)
-        self.ln_2 = nn.LayerNorm(config.n_embd, bias=config.bias)
-        self.ffn = FFN(config)
+        self.ln_1 = nn.LayerNorm(configs.n_embd, bias=configs.bias)
+        self.attn = self._get_attn_type(configs)
+        self.ln_2 = nn.LayerNorm(configs.n_embd, bias=configs.bias)
+        self.ffn = FFN(configs)
 
-    def _get_attn_type(self, config):
-        if config.use_dilated_attn:
-            return DilatedCausalSelfAttention(config)
+    def _get_attn_type(self, configs):
+        if configs.use_dilated_attn:
+            return DilatedCausalSelfAttention(configs)
         else:
-            return CausalSelfAttention(config)
+            return CausalSelfAttention(configs)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -409,7 +380,7 @@ class TransformerBlock(nn.Module):
 
 @dataclass
 class TransformerConfigs:
-    n_layers: int = 6
+    n_layers: int = 12
     n_embd: int = 512  # Embedding dimension
     n_head: int = 16  # Constraint: n_head % n_embd == 0
     sl: int = 300  # Sequence length
@@ -419,7 +390,7 @@ class TransformerConfigs:
     use_dilated_attn: bool = False
     loss_fn: nn.Module = nn.MSELoss()
     controls: dict = field(
-        default_factory=lambda: {'task': 'mujoco-v3', 'controller': 'Ant-v1'}
+        default_factory=lambda: {"task": "mujoco-v3", "controller": "Ant-v1"}
     )
 
 
@@ -428,34 +399,34 @@ class Transformer(nn.Module):
     Transformer architecture adapted from the GPT-2 implementation.
     """
 
-    def __init__(self, config):
+    def __init__(self, configs):
         super(Transformer, self).__init__()
-        assert config.sl is not None
-        self.config = config
-        self.controls = config.controls
-        self.d_in = nn.Linear(config.n_embd, config.n_embd)
+        assert configs.sl is not None
+        self.configs = configs
+        self.controls = configs.controls
+        self.d_in = nn.Linear(configs.n_embd, configs.n_embd)
         self.transformer = nn.ModuleDict(
             dict(
                 # Since our tasks are continuous, we do not use token embeddings.
-                wpe=nn.Embedding(config.sl, config.n_embd),
-                dropout=nn.Dropout(config.dropout),
+                wpe=nn.Embedding(configs.sl, configs.n_embd),
+                dropout=nn.Dropout(configs.dropout),
                 hidden=nn.ModuleList(
-                    [TransformerBlock(config) for _ in range(config.n_layers)]
+                    [TransformerBlock(configs) for _ in range(configs.n_layers)]
                 ),
-                ln_f=nn.LayerNorm(config.n_embd, bias=config.bias),
+                ln_f=nn.LayerNorm(configs.n_embd, bias=configs.bias),
             )
         )
 
         # Adjust output dims based on task and controller
-        self.d_out = config.n_embd
-        if config.controls['task'] == 'mujoco-v1':
-            if config.controls['controller'] == 'Ant-v1':
+        self.d_out = configs.n_embd
+        if configs.controls["task"] == "mujoco-v1":
+            if configs.controls["controller"] == "Ant-v1":
                 self.d_out = 29
             else:
                 self.d_out = 18
 
-        self.task_head = nn.Linear(config.n_embd, self.d_out, bias=config.bias)
-        self.loss_fn = self.config.loss_fn
+        self.task_head = nn.Linear(configs.n_embd, self.d_out, bias=configs.bias)
+        self.loss_fn = self.configs.loss_fn
 
         # Initialize all weights
         self.std = 0.02
@@ -463,7 +434,7 @@ class Transformer(nn.Module):
 
         # Report the number of parameters
         print(
-            'Transformer Model Parameter Count (excl. pos. emb.): %.2fM'
+            "Transformer Model Parameter Count (excl. pos. emb.): %.2fM"
             % (self.get_num_params() / 1e6,)
         )
 
@@ -475,9 +446,9 @@ class Transformer(nn.Module):
             module (nn.Module): The module to initialize.
         """
         if isinstance(module, nn.Linear):
-            if hasattr(module, 'SCALE_INIT'):
+            if hasattr(module, "SCALE_INIT"):
                 # Scale by 2 to account for self-attn and ffn sub-layer
-                self.std *= (2 * self.config.n_layers) ** -0.5
+                self.std *= (2 * self.configs.n_layers) ** -0.5
             torch.nn.init.normal_(module.weight, mean=0.0, std=self.std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
@@ -513,58 +484,43 @@ class Transformer(nn.Module):
 
         # Project input to lower-dimensional space
         x = self.d_in(inputs)  # -> (bsz, sl, n_embd)
-        print(f'x shape: {x.shape}')
+        # print(f"x shape: {x.shape}")
         # Generate positional embeddings for the sequence
         pos = torch.arange(0, sl, dtype=torch.long, device=device)  # -> (sl)
-        print(f'pos shape: {pos.shape}')
+        # print(f"pos shape: {pos.shape}")
 
         # Position embeddings of shape (sl, n_embd))
         pos_emb = self.transformer.wpe(pos)  # -> (bsz, sl, n_embd)
-        print(f'pos_emb shape(): {pos_emb.shape}')
+        # print(f"pos_emb shape(): {pos_emb.shape}")
 
         # Add positional embeddings to input
-        x = x + self.transformer.dropout(
-            pos_emb.unsqueeze(0).expand(bsz, -1, -1)
-        )
-        print(f'x shape: {x.shape}')
+        # x = x + self.transformer.dropout(pos_emb.unsqueeze(0).expand(bsz, -1, -1))
+        x = x + pos_emb.unsqueeze(0)
+        x = self.transformer.dropout(x)
+        # print(f"x shape: {x.shape}")
 
         # Pass through each transformer block in hidden layers
         for transformer_block in self.transformer.hidden:
             x = transformer_block(x)
-            print(f'x shape in hidden layers: {x.shape}')
+            # print(f"x shape in hidden layers: {x.shape}")
 
         # Apply layer norm to output of the last transformer block
         x = self.transformer.ln_f(x)
-        print(f'x shape after ln_F: {x.shape}')
+        # print(f"x shape after ln_F: {x.shape}")
         # Output model predictions!
         preds = self.task_head(x)  # -> (bsz, sl, d_out)
-        print(f'preds shape: {preds.shape}')
-        if targets is not None:
-            if self.config.controls['task'] != 'mujoco-v3':
-                loss, metrics = self.loss_fn(preds, targets)
-                print(f'preds shape {preds.shape}')
-                return preds, (loss, metrics)
-            else:
-                loss = self.loss_fn(preds, targets)
-                print(f'preds shape {preds.shape}')
-                return preds, (loss, None)
+        # print(f"preds shape: {preds.shape}")
+        if self.controls["task"] != "mujoco-v3":
+            loss, metrics = (
+                self.loss_fn(preds, targets) if targets is not None else (None, None)
+            )
+            return preds, (loss, metrics)
         else:
-            print(f'preds shape {preds.shape}')
-            # TODO: Is this what we want? Probably not.
-            # x shape: torch.Size([2, 299, 512])
-            # pos shape: torch.Size([299])
-            # pos_emb shape(): torch.Size([299, 512])
-            # x shape: torch.Size([2, 299, 512])
-            # x shape in hidden layers: torch.Size([2, 299, 512])
-            # x shape in hidden layers: torch.Size([2, 299, 512])
-            # x shape in hidden layers: torch.Size([2, 299, 512])
-            # x shape in hidden layers: torch.Size([2, 299, 512])
-            # x shape in hidden layers: torch.Size([2, 299, 512])
-            # x shape in hidden layers: torch.Size([2, 299, 512])
-            # x shape after ln_F: torch.Size([2, 299, 512])
-            # preds shape: torch.Size([2, 299, 512])
-            # preds shape torch.Size([2, 299, 512])
-            return preds, (None, None)
+            # print("Is targets none?", targets is None)
+            loss = self.loss_fn(preds, targets) if targets is not None else None
+            # print("loss is", loss)
+            # print('preds are', preds[:10])
+            return preds, (loss,)
 
     # TODO: Not sure when/where this could be used, but we'd like to use it!
     # TODO: Also need to fix this function to make sure it's correct.
@@ -573,7 +529,7 @@ class Transformer(nn.Module):
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
-        cfg = self.config
+        cfg = self.configs
         L, H, Q, T = (
             cfg.num_layers,
             cfg.n_head,
@@ -592,11 +548,9 @@ class Transformer(nn.Module):
     def flops_per_token(self):
         """Estimate the number of floating-point operations per token."""
         flops = 0
-        cfg = self.config
+        cfg = self.configs
         # Embedding layers
-        flops += (
-            2 * cfg.d_model * cfg.max_seq_len
-        )  # input and position embeddings
+        flops += 2 * cfg.d_model * cfg.max_seq_len  # input and position embeddings
         # Transformer blocks
         for _ in range(cfg.num_layers):
             # Layer normalization
@@ -650,23 +604,21 @@ class Transformer(nn.Module):
         """
 
         device = next(self.parameters()).device
-        print(f'Predicting on {device}.')
+        print(f"Predicting on {device}.")
         num_trajectories, seq_len, d_in = inputs.size()
 
         # Initialize the predicted sequences and losses
         ar_sequences = inputs.clone()
-        preds = torch.zeros(
-            num_trajectories, steps, self.config.d_out, device=device
-        )
+        preds = torch.zeros(num_trajectories, steps, self.configs.d_out, device=device)
         trajectory_losses = torch.zeros(num_trajectories, steps, device=device)
         metrics = {
             key: torch.zeros(num_trajectories, steps, device=device)
             for key in [
-                'coordinate_loss',
+                "coordinate_loss",
                 #  'orientation_loss',
-                'angle_loss',
-                'coordinate_velocity_loss',
-                'angular_velocity_loss',
+                "angle_loss",
+                "coordinate_velocity_loss",
+                "angular_velocity_loss",
             ]
         }
 
@@ -676,7 +628,7 @@ class Transformer(nn.Module):
         u_end = inputs.shape[2]  # TODO: Unused...
 
         # Iterate over the specified number of time steps
-        for i in tqdm(range(steps), desc='Predicting', unit='step'):
+        for i in tqdm(range(steps), desc="Predicting", unit="step"):
             xs = ar_sequences[:, : i + 1 + init, :]
             ys = targets[:, : i + 1 + init, :]
 
@@ -742,13 +694,13 @@ class Transformer(nn.Module):
         Predicts the video frame.
 
         Args:
-            inputs (torch.Tensor): A tensor of input videos with shape [num_videos, seq_len, d_in].
-            targets (torch.Tensor): A tensor of target videos with shape [num_videos, seq_len, d_in].
+            inputs (torch.Tensor): A tensor of input videos with shape [num_videos, sl, d_in].
+            targets (torch.Tensor): A tensor of target videos with shape [num_videos, sl, d_in].
             init (int): The index of the initial state to start the prediction from. Defaults to 0.
             steps (int): The number of time steps to predict. Defaults to 50.
             ar_steps (int): The number of autoregressive steps to take before using the ground truth state.
                 Defaults to 1, which means the model always uses the ground truth state to predict the next state.
-                If set to seq_len, the model always uses the last predicted state to predict the next state.
+                If set to sl, the model always uses the last predicted state to predict the next state.
 
         Returns:
             tuple[torch.Tensor, tuple[torch.Tensor, dict[str, torch.Tensor], torch.Tensor]]:
@@ -759,46 +711,52 @@ class Transformer(nn.Module):
                     - video_losses (torch.Tensor): A tensor of losses for each video at each time step,
                         with shape [num_videos, steps].
         """
-
         device = next(self.parameters()).device
-        print(f'Predicting on {device}.')
-        num_videos, seq_len, d_in = inputs.size()
+        print(f"Predicting on {device}.")
+        num_videos, sl, d_in = inputs.size()
 
         # Initialize the predicted sequences and losses
         ar_sequences = inputs.clone()
-        preds = torch.zeros(num_videos, steps, self.config.d_out, device=device)
+        preds = torch.zeros(num_videos, steps, d_in, device=device)
         video_losses = torch.zeros(num_videos, steps, device=device)
 
-        # Initialize initial autoregressive sequences up to `init` steps for each video
-        ar_sequences[:, :init, :] = inputs[:, :init, :]
+        i = init
+        with tqdm(total=steps, desc="Predicting", unit="step") as pbar:
+            while i < init + steps:
+                window_start = max(0, i - self.configs.sl + 1)
 
-        # Iterate over the specified number of time steps
-        for i in tqdm(range(steps), desc='Predicting', unit='step'):
-            xs = ar_sequences[:, : i + init, :]
-            ys = targets[:, : i + init, :]
+                input_window = ar_sequences[:, window_start : i + 1, :]
+                target_window = targets[:, window_start : i + 1, :]
+                preds_step, (step_loss,) = self.forward(input_window, target_window)
 
-            preds_step, step_loss = self.forward(xs, ys)
+                preds[:, i - init, :] = preds_step[:, -1, :]
+                video_losses[:, i - init] = step_loss
 
-            preds[:, i, :] = preds_step[:, -1, :]
+                # Update autoregressive sequences for the next step
+                if i < init + steps - 1:
+                    next_step = i + 1
+                    if next_step < sl:
+                        next_input = (
+                            preds[:, i - init, :]
+                            if (i - init + 1) % ar_steps != 0
+                            else inputs[:, next_step, :]
+                        )
+                        ar_sequences[:, next_step, :] = next_input
+                    else:
+                        ar_sequences = torch.cat(
+                            [
+                                ar_sequences[:, 1:, :],
+                                preds[:, i - init : i - init + 1, :],
+                            ],
+                            dim=1,
+                        )
 
-            # Update autoregressive sequences for each video independently
-            if i < steps - 1:
-                for video_idx in range(num_videos):
-                    next_input = ar_sequences[
-                        video_idx, i + 1 + init, :
-                    ].clone()
-                    next_input = (
-                        preds[video_idx, i, :]
-                        if (i + 1) % ar_steps != 0
-                        else inputs[video_idx, i + 1 + init, :]
-                    )
-                    ar_sequences[video_idx, i + 1 + init, :] = next_input
-
-            video_losses[:, i] = step_loss
+                i += 1
+                pbar.update(1)
 
         # # If we've reached the end of the input sequence but still have steps to predict,
         # # use the last predicted state as input (we need to hallucinate and autoregressively predict)
-        # for i in range(seq_len - init, steps):
+        # for step in range(sl - init, steps):
         #     xs = ar_sequences[:, -1, :].unsqueeze(1)
         #     ys = None
 
@@ -807,11 +765,11 @@ class Transformer(nn.Module):
         #     preds[:, i, :] = preds_step[:, -1, :]
 
         #     # Update autoregressive sequences for each video independently
-        #     if i < steps - 1:
+        #     if step < steps - 1:
         #         for video_idx in range(num_videos):
         #             next_input = ar_sequences[video_idx, -1, :].clone()
         #             next_input = preds[video_idx, i, :]
-        #             ar_sequences[video_idx] = ar_sequences[video_idx, i + 1 + init, :] = next_input
+        #             ar_sequences[video_idx] = ar_sequences[video_idx, step + 1 + init, :] = next_input
 
         #     video_losses[:, i] = step_loss
 
@@ -819,3 +777,4 @@ class Transformer(nn.Module):
         avg_loss = video_losses.mean()
 
         return preds, (avg_loss, video_losses)
+
