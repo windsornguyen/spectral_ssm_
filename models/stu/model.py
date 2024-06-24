@@ -18,7 +18,6 @@ from utils.swiglu import SwiGLU
 class SSSMConfigs:
     n_layers: int = 6
     n_embd: int = 512
-    d_model: int = 24
     d_out: int = 18
     sl: int = 300
     scale: int = 4
@@ -30,7 +29,7 @@ class SSSMConfigs:
     learnable_m_y: bool = True
     loss_fn: nn.Module = nn.MSELoss()
     controls: dict = field(
-        default_factory=lambda: {'task': 'mujoco-v3', 'controller': 'Ant-v1'}
+        default_factory=lambda: {"task": "mujoco-v3", "controller": "Ant-v1"}
     )
 
 
@@ -47,38 +46,34 @@ class STU(nn.Module):
         learnable_m_y (bool): Whether the m_y matrix is learnable.
     """
 
-    def __init__(self, config) -> None:
+    def __init__(self, configs) -> None:
         super(STU, self).__init__()
-        self.device = torch.device(
-            'cuda' if torch.cuda.is_available() else 'cpu'
-        )
-        self.d_model = config.d_model
-        self.d_out = config.d_out
-        self.sl, self.k = config.sl, config.num_eigh
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.n_embd = configs.n_embd
+        self.d_out = configs.d_out
+        self.sl, self.k = configs.sl, configs.num_eigh
         self.eigh = stu_utils.get_top_hankel_eigh(self.sl, self.k, self.device)
 
         # Initialize M matrices
-        self.auto_reg_k_u = config.auto_reg_k_u
-        self.auto_reg_k_y = config.auto_reg_k_y
-        self.learnable_m_y = config.learnable_m_y
-        self.m_u = nn.Parameter(
-            torch.empty(self.d_out, self.d_out, self.auto_reg_k_u)
-        )
+        self.auto_reg_k_u = configs.auto_reg_k_u
+        self.auto_reg_k_y = configs.auto_reg_k_y
+        self.learnable_m_y = configs.learnable_m_y
+        self.m_u = nn.Parameter(torch.empty(self.d_out, self.d_out, self.auto_reg_k_u))
         self.m_phi = nn.Parameter(torch.empty(self.d_out * self.k, self.d_out))
         self.m_y = (
             nn.Parameter(torch.empty(self.d_out, self.auto_reg_k_y, self.d_out))
             if self.learnable_m_y
             else self.register_buffer(
-                'm_y', torch.empty(self.d_out, self.auto_reg_k_y, self.d_out)
+                "m_y", torch.empty(self.d_out, self.auto_reg_k_y, self.d_out)
             )
         )
 
         # The output projection
-        self.proj = nn.Linear(self.d_model, self.d_out)
+        self.proj = nn.Linear(self.n_embd, self.d_out)
         self.proj.SCALE_INIT = 1
 
         # Regularization
-        self.dropout = config.dropout
+        self.dropout = configs.dropout
         self.stu_dropout = nn.Dropout(self.dropout)
         self.resid_dropout = nn.Dropout(self.dropout)
 
@@ -116,16 +111,18 @@ class FFN(nn.Module):
     Simple feed-forward network.
     """
 
-    def __init__(self, config):
+    def __init__(self, configs):
         super(FFN, self).__init__()
         # TODO: Consider implementing Squared ReLU from https://arxiv.org/pdf/2109.08668 ??
-        self.swiglu = SwiGLU(config.d_model, config.scale * config.d_model, bias=config.bias)
-        self.proj = nn.Linear(config.scale * config.d_model, config.d_out, bias=config.bias)
-        self.dropout = nn.Dropout(config.dropout)
+        self.swiglu = SwiGLU(
+            configs.n_embd, configs.scale * configs.n_embd, bias=configs.bias
+        )
+        self.proj = nn.Linear(
+            configs.scale * configs.n_embd, configs.d_out, bias=configs.bias
+        )
+        self.dropout = nn.Dropout(configs.dropout)
 
     def forward(self, x):
-        # TODO: MAYBE consider using skip connection(s) here? Is that crazy?
-        # TODO: Just test to see if skip connections help here.
         x = self.swiglu(x)
         x = self.proj(x)
         x = self.dropout(x)
@@ -133,16 +130,16 @@ class FFN(nn.Module):
 
 
 class STUBlock(nn.Module):
-    def __init__(self, config):
+    def __init__(self, configs):
         super(STUBlock, self).__init__()
-        self.ln_1 = nn.LayerNorm(config.d_model, bias=config.bias)
-        self.stu = STU(config)
-        self.ln_2 = nn.LayerNorm(config.d_model, bias=config.bias)
-        self.ffn = FFN(config)
+        self.ln_1 = nn.LayerNorm(configs.n_embd, bias=configs.bias)
+        self.stu = STU(configs)
+        self.ln_2 = nn.LayerNorm(configs.n_embd, bias=configs.bias)
+        self.ffn = FFN(configs)
 
     def forward(self, x):
-        x = x + self.stu(self.ln_1(x))
-        x = x + self.ffn(self.ln_2(x))
+        x = self.stu(self.ln_1(x))
+        x = self.ffn(self.ln_2(x))
         return x
 
 
@@ -151,17 +148,18 @@ class SSSM(nn.Module):
     General model architecture based on STU blocks.
     """
 
-    def __init__(self, config):
+    def __init__(self, configs):
         super(SSSM, self).__init__()
-        self.n_layers = config.n_layers
-        self.n_embd = config.n_embd
-        self.d_out = config.d_out
-        self.sl, self.k = config.sl, config.num_eigh
+        self.configs = configs
+        self.n_layers = configs.n_layers
+        self.n_embd = configs.n_embd
+        self.d_out = configs.d_out
+        self.sl, self.k = configs.sl, configs.num_eigh
 
-        self.bias = config.bias
-        self.dropout = config.dropout
-        self.loss_fn = config.loss_fn
-        self.controls = config.controls
+        self.bias = configs.bias
+        self.dropout = configs.dropout
+        self.loss_fn = configs.loss_fn
+        self.controls = configs.controls
         self.task_head = nn.Linear(self.n_embd, self.d_out, bias=self.bias)
 
         self.emb = nn.Linear(self.n_embd, self.n_embd)
@@ -170,15 +168,13 @@ class SSSM(nn.Module):
                 # Since our tasks are continuous, we do not use token embeddings.
                 wpe=nn.Embedding(self.sl, self.n_embd),
                 dropout=nn.Dropout(self.dropout),
-                hidden=nn.ModuleList(
-                    [STUBlock(config) for _ in range(self.n_layers)]
-                ),
+                hidden=nn.ModuleList([STUBlock(configs) for _ in range(self.n_layers)]),
                 ln_f=nn.LayerNorm(self.n_embd, bias=self.bias),
             )
         )
 
-        if self.controls['task'] == 'mujoco-v1':
-            if self.controls['controller'] == 'Ant-v1':
+        if self.controls["task"] == "mujoco-v1":
+            if self.controls["controller"] == "Ant-v1":
                 self.d_out = 29
             else:
                 self.d_out = 18
@@ -189,9 +185,34 @@ class SSSM(nn.Module):
         self.apply(self._init_weights)
 
         # Report the number of parameters
-        print(
-            'STU Model Parameter Count: %.2fM' % (self.get_num_params() / 1e6,)
-        )
+        print("STU Model Parameter Count: %.2fM" % (self.get_num_params() / 1e6,))
+
+    def forward(self, inputs, targets):
+        # TODO: Add docstrings to this and shape annotate each line
+        device = inputs.device
+        bsz, sl, n_embd = inputs.size()
+        x = self.emb(inputs)
+
+        # Generate positional embeddings for the sequence
+        pos = torch.arange(0, sl, dtype=torch.long, device=device)  # -> (sl)
+        pos_emb = self.stu.wpe(pos)
+
+        # Add positional embeddings to input
+        x = x + self.stu.dropout(pos_emb.unsqueeze(0).expand(bsz, -1, -1))
+        for stu_block in self.stu.hidden:
+            x = x + stu_block(x)
+        x = self.stu.ln_f(x)
+        preds = self.task_head(x)
+
+        if self.controls["task"] != "mujoco-v3":
+            loss, metrics = (
+                self.loss_fn(preds, targets) if targets is not None else (None, None)
+            )
+            return preds, (loss, metrics)
+        else:
+            loss = self.loss_fn(preds, targets) if targets is not None else None
+
+            return preds, (loss,)
 
     def _init_weights(self, module):
         """
@@ -201,7 +222,7 @@ class SSSM(nn.Module):
             module (nn.Module): The module to initialize.
         """
         if isinstance(module, nn.Linear):
-            if hasattr(module, 'SCALE_INIT'):
+            if hasattr(module, "SCALE_INIT"):
                 # Scale by 2 to account for stu and ffn sub-layer
                 self.std *= (2 * self.n_layers) ** -0.5
             torch.nn.init.normal_(module.weight, mean=0.0, std=self.std)
@@ -231,36 +252,6 @@ class SSSM(nn.Module):
         num_params = sum(p.numel() for p in self.parameters())
         return num_params
 
-    def forward(self, inputs, targets):
-        # TODO: Add docstrings to this and shape annotate each line
-        device = inputs.device
-        bsz, sl, d_model = inputs.size()
-        x = self.emb(inputs)
-
-        # Generate positional embeddings for the sequence
-        pos = torch.arange(0, sl, dtype=torch.long, device=device)  # -> (sl)
-        pos_emb = self.stu.wpe(pos)
-
-        # Add positional embeddings to input
-        x = x + self.stu.dropout(pos_emb.unsqueeze(0).expand(bsz, -1, -1))
-        for stu_block in self.stu.hidden:
-            x = x + stu_block(x)
-        x = self.stu.ln_f(x)
-        preds = self.task_head(x)
-        
-        # TODO: I am pretty sure preds is wrong for task v3.
-        if self.controls['task'] != 'mujoco-v3':
-            loss, metrics = (
-                self.loss_fn(preds, targets) if targets is not None else (None, None)
-            )
-            print(f'preds shape {preds.shape}')
-            return preds, (loss, metrics)
-        else:
-            loss = self.loss_fn(preds, targets) if targets is not None else None
-            print(f'preds shape {preds.shape}')
-            return preds, (loss,)
-
-
     # TODO: Not sure when/where this could be used, but we'd like to use it!
     # TODO: Also need to fix this function to make sure it's correct.
     def estimate_mfu(self, fwdbwd_per_iter, dt):
@@ -268,7 +259,7 @@ class SSSM(nn.Module):
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
-        cfg = self.config
+        cfg = self.configs
         L, D, E, T = cfg.num_layers, cfg.n_embd, cfg.num_eigh, cfg.input_len
 
         # Embedding layers
@@ -295,9 +286,7 @@ class SSSM(nn.Module):
         # Language model head
         lm_head_flops = 2 * D * cfg.vocab_size
 
-        flops_per_iter = (
-            embed_flops + stu_block_flops + final_ln_flops + lm_head_flops
-        )
+        flops_per_iter = embed_flops + stu_block_flops + final_ln_flops + lm_head_flops
         flops_per_fwdbwd = flops_per_iter * fwdbwd_per_iter
 
         # Express flops throughput as ratio of A100 bfloat16 peak flops
@@ -310,7 +299,7 @@ class SSSM(nn.Module):
     def flops_per_token(self):
         """Estimate the number of floating-point operations per token."""
         flops = 0
-        cfg = self.config
+        cfg = self.configs
 
         # Embedding layers
         flops += 2 * cfg.n_embd * cfg.block_size  # wte and wpe embeddings
@@ -321,12 +310,8 @@ class SSSM(nn.Module):
             flops += 2 * cfg.n_embd * cfg.block_size  # ln_1 and ln_2
 
             # STU layer
-            flops += (
-                2 * cfg.num_eigh * cfg.n_embd * cfg.block_size
-            )  # Compute x_tilde
-            flops += (
-                2 * cfg.n_embd * cfg.num_eigh * cfg.n_embd
-            )  # Apply m_phi matrix
+            flops += 2 * cfg.num_eigh * cfg.n_embd * cfg.block_size  # Compute x_tilde
+            flops += 2 * cfg.n_embd * cfg.num_eigh * cfg.n_embd  # Apply m_phi matrix
 
             # FFN layer
             flops += 2 * cfg.n_embd * cfg.scale * cfg.n_embd  # c_fc
@@ -367,12 +352,12 @@ class SSSM(nn.Module):
         predicted_sequence = []
         total_loss = torch.tensor(0.0, device=device)
         metrics = {
-            'loss': [],
-            'coordinate_loss': [],
-            'orientation_loss': [],
-            'angle_loss': [],
-            'coordinate_velocity_loss': [],
-            'angular_velocity_loss': [],
+            "loss": [],
+            "coordinate_loss": [],
+            "orientation_loss": [],
+            "angle_loss": [],
+            "coordinate_velocity_loss": [],
+            "angular_velocity_loss": [],
         }
 
         for i in range(t):

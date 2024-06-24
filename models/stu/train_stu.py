@@ -16,6 +16,7 @@ from safetensors.torch import load_file, save_file
 from safetensors import safe_open
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
+from time import time
 
 from torch.nn import MSELoss
 from losses.loss_ant import AntLoss
@@ -25,12 +26,57 @@ from utils.dataloader import get_dataloader, split_data
 from utils import experiment as exp, optimizer as opt
 from models.stu.model import SSSM, SSSMConfigs
 from utils.colors import Colors, colored_print
-from utils.dist import set_seed, setup, cleanup
+from utils.dist import setup, cleanup
+
+
+def save_results(task, ctrl, data, name, ts, directory="results", prefix="sssm", meta=None):
+    """
+    Save data to a file with enhanced flexibility and metadata support.
+
+    Args:
+        task (str): Task name.
+        ctrl (str): Controller name.
+        data (list or dict): Data to save.
+        name (str): Data category name.
+        ts (str): Timestamp.
+        dir (str): Base directory for saving files.
+        prefix (str): File name prefix.
+        meta (dict): Additional metadata to save.
+
+    Returns:
+        str: Path of the saved file.
+    """
+    path = os.path.join(directory, task, prefix)
+    os.makedirs(path, exist_ok=True)
+
+    fname = f"{prefix}-{ctrl}-{name}-{ts}.txt"
+    fpath = os.path.join(path, fname)
+
+    with open(fpath, "w") as f:
+        if meta:
+            for k, v in meta.items():
+                f.write(f"# {k}: {v}\n")
+            f.write("\n")
+
+        if isinstance(data, dict):
+            for k, v in data.items():
+                f.write(f"# {k}\n")
+                for item in v:
+                    f.write(f"{item}\n")
+                f.write("\n")
+        else:
+            for item in data:
+                f.write(f"{item}\n")
+
+    print(f"Data saved to {fpath}")
+    return fpath
 
 
 # TODO: Change this to be the correct command.
 # To run the script: `torchrun --nproc_per_node=1 train_stu.py`
 def main() -> None:
+    # TODO: Is set_start_method needed if we re-write the dataloader?
+    # torch.multiprocessing.set_start_method("spawn")
     torch.set_float32_matmul_precision("high")  # Enable CUDA TensorFloat-32
 
     # Process command line flags
@@ -42,27 +88,26 @@ def main() -> None:
         type=str,
         default="Ant-v1",
         choices=["Ant-v1", "HalfCheetah-v1", "Walker2D-v1"],
-        help="Controller to use for the MuJoCo environment",
+        help="Controller to use for the MuJoCo environment. Defaults to Ant-v1.",
     )
     parser.add_argument(
         "--task",
         type=str,
-        default="mujoco-v1",
+        default="mujoco-v3",
         choices=[
             "mujoco-v1",  # Predict state trajectories, incl. controls as input
             "mujoco-v2",  # Predict state trajectories, w/o incl. controls as input
             "mujoco-v3",  # Predict state trajectories using a unified representation
         ],
-        help="Task to train on",
+        help="Task to train on. Defaults to mujoco-v3.",
     )
     parser.add_argument(
         "--della",
         type=bool,
         default=True,
-        help="Training on the Princeton Della cluster",
+        help="Training on the Princeton Della cluster. Defaults to True.",
         # NOTE: You MUST run with `torchrun` for this to work in the general setting.
     )
-
     args = parser.parse_args()
 
     controller = args.controller
@@ -72,15 +117,12 @@ def main() -> None:
         "mujoco-v3": args.task == "mujoco-v3",
     }
 
-    # TODO: Is this needed if we re-write the dataloader?
-    torch.multiprocessing.set_start_method("spawn")
-
     # Defaults specific to the Princeton HPC cluster; modify to your own setup.
     device, local_rank, rank, world_size, num_workers, main_process = setup(args)
 
     if main_process:
         colored_print(
-            "Lyla: Greetings! I'm Lyla, your friendly neighborhood AI training assistant.",
+            "\nLyla: Greetings! I'm Lyla, your friendly neighborhood AI training assistant.",
             Colors.OKBLUE,
         )
 
@@ -89,8 +131,8 @@ def main() -> None:
     if main_process:
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir, exist_ok=True)
-        if not os.path.exists("plots/"):
-            os.makedirs("plots/")
+        if not os.path.exists("results/"):
+            os.makedirs("results/")
 
     # Shared hyperparameters
     n_layers: int = 6
@@ -103,11 +145,11 @@ def main() -> None:
     learnable_m_y: bool = (True,)
     if not task["mujoco-v3"]:
         if controller == "Ant-v1":
-            loss_fn = AntLoss
+            loss_fn = AntLoss()
         elif controller == "HalfCheetah-v1":
-            loss_fn = HalfCheetahLoss
+            loss_fn = HalfCheetahLoss()
         elif controller == "Walker2D-v1":
-            loss_fn = Walker2DLoss
+            loss_fn = Walker2DLoss()
         else:
             loss_fn = None
     else:
@@ -115,13 +157,13 @@ def main() -> None:
 
     # Task-specific hyperparameters
     if task["mujoco-v1"]:
-        d_model: int = 24 if controller != "Ant-v1" else 37
+        n_embd: int = 24 if controller != "Ant-v1" else 37
         d_out: int = 18 if controller != "Ant-v1" else 29
         sl: int = 1_000
 
         configs = SSSMConfigs(
             n_layers=n_layers,
-            d_model=d_model,
+            n_embd=n_embd,
             d_out=d_out,
             sl=sl,
             scale=scale,
@@ -136,12 +178,12 @@ def main() -> None:
         )
 
     elif task["mujoco-v2"]:
-        d_model: int = 18 if controller != "Ant-v1" else 29
-        d_out = d_model
+        n_embd: int = 18 if controller != "Ant-v1" else 29
+        d_out = n_embd
         sl: int = 1_000
         configs = SSSMConfigs(
             n_layers=n_layers,
-            d_model=d_model,
+            n_embd=n_embd,
             d_out=d_out,
             sl=sl,
             scale=scale,
@@ -159,12 +201,12 @@ def main() -> None:
         RESNET_D_OUT: int = 512  # ResNet-18 output dim
         RESNET_FEATURE_SIZE: int = 1
         d_out: int = RESNET_D_OUT * RESNET_FEATURE_SIZE**2
-        d_model = d_out
+        n_embd = d_out
         sl: int = 300
 
         configs = SSSMConfigs(
             n_layers=n_layers,
-            d_model=d_model,
+            n_embd=n_embd,
             d_out=d_out,
             sl=sl,
             scale=scale,
@@ -179,33 +221,48 @@ def main() -> None:
         )
 
     model = SSSM(configs).to(device)
-    model = torch.compile(model)
+    # model = torch.compile(model)
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank], gradient_as_bucket_view=True)
     stu_model = model.module if world_size > 1 else model
 
     # Data loader hyperparameters
-    total_bsz: int = 16
-    bsz: int = 4  # Micro batch size
-    grad_accum_steps = total_bsz // (bsz * sl * world_size)
-
-    if main_process:
-        print(f"Total (desired) batch size: {total_bsz}")
-        print(f"=> Gradient accumulation steps: {grad_accum_steps}")
+    bsz: int = 2
 
     # TODO: Put in v2 data (no controls)
-    dataset = f"data/mujoco-v3/{controller}/{controller}_ResNet-18.safetensors"
+    mujoco_v1_base = f"data/mujoco-v1/{args.controller}/"
+    mujoco_v2_base = f"data/mujoco-v2/{args.controller}/"
+    mujoco_v3_base = f"data/mujoco-v3/{args.controller}/"
 
-    # TODO: Should we load data straight to GPU?
-    # Things to consider:
-    # 1. Can't use multiple workers if straight to GPU (but safetensors is fast anyway)
-    # 2. Will it all fit on the GPU? Is to CPU better?
-    train_data, val_data = split_data(load_file(dataset))
+    # Initialize dataset variable
+    dataset = None
 
+    # Handle mujoco-v1 and mujoco-v2 tasks
+    if args.task in ["mujoco-v1", "mujoco-v2"]:
+        base_path = mujoco_v1_base if args.task == "mujoco-v1" else mujoco_v2_base
+        train_data = {
+            "inputs": f"{base_path}/train_inputs.npy",
+            "targets": f"{base_path}/train_targets.npy",
+        }
+        val_data = {
+            "inputs": f"{base_path}/val_inputs.npy",
+            "targets": f"{base_path}/val_targets.npy",
+        }
+    elif args.task == "mujoco-v3":
+        dataset = torch.load(
+            f"{mujoco_v3_base}{args.controller}_ResNet-18.pt", map_location=device
+        )
+        train_data, val_data = split_data(dataset)
+    else:
+        raise ValueError("Invalid task")
+
+    # TODO: May need to condition the dataloader shift on mujoco-v3 task only?
+    shift = 1
     train_loader = get_dataloader(
         data=train_data,
         task=args.task,
-        batch_size=bsz,
+        bsz=bsz,
+        shift=shift,
         num_workers=num_workers,
         preprocess=True,
         shuffle=True,
@@ -213,14 +270,16 @@ def main() -> None:
         distributed=world_size > 1,
         rank=local_rank,
         world_size=world_size,
-        prefetch_factor=2,
+        prefetch_factor=bsz // 2,
         persistent_workers=True,
+        device=device,
     )
 
     val_loader = get_dataloader(
         data=val_data,
         task=args.task,
-        batch_size=bsz,
+        bsz=bsz,
+        shift=shift,
         num_workers=num_workers,
         preprocess=True,
         shuffle=False,
@@ -228,17 +287,25 @@ def main() -> None:
         distributed=world_size > 1,
         rank=local_rank,
         world_size=world_size,
-        prefetch_factor=2,
+        prefetch_factor=bsz // 2,
         persistent_workers=True,
+        device=device,
     )
 
     # General training hyperparameters
     training_stu = True
-    num_epochs: int = 1
+    num_epochs: int = 3
     steps_per_epoch = len(train_loader)
     num_steps: int = steps_per_epoch * num_epochs
-    warmup_steps: int = num_steps // 10
-    eval_period: int = 10
+    dilation: int = 1
+    warmup_steps: int = num_steps // 8
+    eval_period: int = num_steps // 16
+
+    if main_process:
+        colored_print(f"\nUsing batch size: {bsz}", Colors.OKCYAN)
+        colored_print(f"Number of epochs: {num_epochs}", Colors.OKCYAN)
+        colored_print(f"Steps per epoch: {steps_per_epoch}", Colors.OKCYAN)
+        colored_print(f"=> Number of training steps: {num_steps}", Colors.OKCYAN)
 
     # General training variables
     patient_counter = 0
@@ -253,17 +320,28 @@ def main() -> None:
     weight_decay: float = 1e-1
     max_lr: float = 6e-4
     min_lr: float = max_lr * 0.1
-    optimizer_settings = (warmup_steps, num_steps, max_lr, min_lr, weight_decay)
+    betas = (0.9, 0.95)
+    eps = 1e-8
+    use_amsgrad = True
+    optimizer_settings = (
+        warmup_steps,
+        num_steps,
+        max_lr,
+        min_lr,
+        betas,
+        eps,
+        weight_decay,
+        use_amsgrad,
+    )
 
     training_run = exp.Experiment(
         model=stu_model,
         task=task,
         loss_fn=loss_fn,
-        optimizer_settings=optimizer_settings,
-        training_stu=training_stu,
         bsz=bsz,
         sl=sl,
-        grad_accum_steps=grad_accum_steps,
+        optimizer_settings=optimizer_settings,
+        training_stu=training_stu,
         world_size=world_size,
         main_process=main_process,
         device=device,
@@ -285,117 +363,90 @@ def main() -> None:
         }
 
     if main_process:
-        msg = f"Lyla: We'll be training the SSSM model on the {args.task} task with {controller}."
+        msg = f"\nLyla: We'll be training the SSSM model on the {args.task} task with {controller}."
         if world_size > 1:
             colored_print(
                 f"{msg} {device} on rank {rank + 1}/{world_size}"
                 f" utilizing {world_size} distributed processes.",
-                Colors.OKCYAN,
+                Colors.HEADER,
             )
         else:
             colored_print(f"{msg} {device} today.", Colors.OKCYAN)
 
-    pbar = tqdm(
-        range(num_epochs * steps_per_epoch),
-        desc="Training",
-        unit="step",
-    )
-
     # Training loop
-    stu_model.train()
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     for epoch in range(num_epochs):
-        for step, batch in enumerate(train_loader):
-            last_step = step == num_steps - 1
-
-            if task["mujoco-v3"]:
-                inputs, targets, file_name = batch
-            else:
-                inputs, targets = batch
-
+        for step, (inputs, targets) in enumerate(train_loader):
             relative_step = epoch * steps_per_epoch + step
+            last_step = relative_step == num_steps - 1
+
+            # Perform a training step
+            train_results = training_run.step(inputs, targets, relative_step)
+            train_losses.append(train_results["loss"])
+            grad_norms.append(train_results["grad_norm"])
+
+            if not task["mujoco-v3"]:
+                for k, v in train_results.items():
+                    if k in metric_losses:
+                        metric_losses[k].append(v)
 
             # Periodically evaluate the model on validation set
-            if step % eval_period == 0 or last_step:
+            if relative_step % (eval_period // dilation) == 0 or last_step:
                 if main_process:
                     colored_print(
                         f"\nLyla: Evaluating the SSSM model on step {relative_step}.",
                         Colors.OKCYAN,
                     )
-
                 val_metrics = training_run.evaluate(val_loader)
+
                 val_losses.append(val_metrics["loss"])
                 val_time_steps.append(relative_step)
-                # if master_process:
-                # # TODO: Use pbar write or print statement?
-                # # pbar.write(f"Validation loss: {val_loss_accum.item():.4f}")
-                # print(f'Validation loss: {val_loss_accum.item():.4f}')
-                # with open(log_file, 'a') as f:
-                #     f.write(f'{step} val {val_loss_accum.item():.4f}\n')
-                # if step > 0 and (step % (5000 // scale) == 0 or last_step):
-                #     if val_loss_accum.item() < best_val_loss:
-                #         best_val_loss = val_loss_accum.item()
-                #         # optionally write model checkpoints
-                #         checkpoint_path = os.path.join(
-                #             # TODO: Switch to safetensors?
-                #             log_dir, f'model_{step:05d}.pt'
-                #         )
-                #         checkpoint = {
-                #             'model': raw_model.state_dict(),
-                #             'config': raw_model.config,
-                #             'optimizer': optimizer.state_dict(),
-                #             'step': step,
-                #             'val_loss': val_loss_accum.item(),
-                #             'rng_state_pytorch': torch.get_rng_state(),
-                #             'rng_state_cuda': torch.cuda.get_rng_state(),
-                #             'rng_state_numpy': np.random.get_state(),
-                #         }
-                #         print(
-                #             f'Validation loss improved at step {step}! Saving the model to {checkpoint_path}.'
-                #         )
-                #         torch.save(checkpoint, checkpoint_path)
 
                 if main_process:
                     colored_print(
-                        f'\nValidation Loss: {val_metrics["loss"]:.2f}.',
+                        f"\nValidation Loss: {val_metrics['loss']:.4f}.",
                         Colors.OKCYAN,
                     )
 
-                    val_loss = val_metrics["loss"]
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
+                    if val_metrics["loss"] < best_val_loss:
+                        best_val_loss = val_metrics["loss"]
                         best_model_step = relative_step
                         patient_counter = 0
-                        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
-                        # TODO: Add task to this depending on how you do the --task flag
-                        checkpoint_filename = f"sssm-{controller}-chkpt-step{relative_step}-{timestamp}.safetensors"
-                        checkpoint_path = os.path.join(
-                            checkpoint_dir, checkpoint_filename
+                        # Construct paths for model checkpoint and extra info
+                        model_checkpoint = f"sssm-{controller}-model_step-{relative_step}-{timestamp}.pt"
+                        model_path = os.path.join(checkpoint_dir, model_checkpoint)
+
+                        extra_info = f"sssm-{controller}-other_step-{relative_step}-{timestamp}.pt"
+                        extra_info_path = os.path.join(checkpoint_dir, extra_info)
+
+                        best_checkpoint = (model_checkpoint, extra_info)
+
+                        # Save model state dict using safetensors
+                        save_file(training_run.model.state_dict(), model_path)
+
+                        # Save optimizer state and other metadata using torch.save
+                        torch.save(
+                            {
+                                "optimizer": training_run.optimizer.state_dict(),
+                                "configs": training_run.model.configs,
+                                "step": relative_step,
+                                "val_loss": val_metrics["loss"],
+                                "metrics": val_metrics,
+                                "timestamp": timestamp,
+                                "rng_state_pytorch": torch.get_rng_state(),
+                                "rng_state_numpy": np.random.get_state(),
+                                "rng_state_cuda": torch.cuda.get_rng_state_all()
+                                if torch.cuda.is_available()
+                                else None,
+                            },
+                            extra_info_path,
                         )
-                        best_checkpoint = checkpoint_filename
 
-                        # TODO: Is this needed if we run with torchrun?
-                        # TODO: Also check that it's correct if needed and what dist.barrier() does
-                        # TODO: TBH, not sure what this is doing.
-                        if dist.is_initialized():
-                            # Save the model on the main process and broadcast it to all processes
-                            if main_process:
-                                save_file(
-                                    stu_model.module.state_dict(),
-                                    checkpoint_path,
-                                )
-                            dist.barrier()
-                            map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
-                            stu_model.load_state_dict(
-                                load_file(checkpoint_path, device=map_location)
-                            )
-                        else:
-                            save_file(
-                                stu_model.state_dict(),
-                                checkpoint_path,
-                            )
                         colored_print(
-                            f"Lyla: Wow! We have a new personal best for the SSSM model at step {step}. The validation loss improved to: {val_loss:.4f}! Checkpoint saved as {checkpoint_path}",
+                            f"Lyla: Wow! We have a new personal best for the SSSM model at step {relative_step}. "
+                            f"The validation loss improved to: {val_metrics['loss']:.4f}! "
+                            f"Model checkpoint saved as {model_path} and other data saved as {extra_info_path}",
                             Colors.OKGREEN,
                         )
                     else:
@@ -405,83 +456,81 @@ def main() -> None:
                             Colors.WARNING,
                         )
 
-                        if patient_counter >= patience:
-                            colored_print(
-                                f"Lyla: We have reached the patience limit of {patience} for the SSSM model. Stopping the training early at step {step}...",
-                                Colors.FAIL,
-                            )
+                if patient_counter >= patience:
+                    if main_process:
+                        colored_print(
+                            f"Lyla: We have reached the patience limit of {patience} for the SSSM model. Stopping the training early at step {relative_step}...",
+                            Colors.FAIL,
+                        )
+                    break
 
-                            # Save the data points to files
-                            # TODO: Change these paths after directory structure is settled
-                            np.save(
-                                f"plots/sssm/sssm-{args.task}-{controller}_train_losses.npy",
-                                train_losses,
-                            )
-                            np.save(
-                                f"plots/sssm/sssm-{args.task}-{controller}_val_losses.npy",
-                                val_losses,
-                            )
-                            np.save(
-                                f"plots/sssm/sssm-{args.task}-{controller}_val_time_steps.npy",
-                                val_time_steps,
-                            )
-                            np.save(
-                                f"plots/sssm/sssm-{args.task}-{controller}_grad_norms.npy",
-                                grad_norms,
-                            )
-                            if not task["mujoco-v3"]:
-                                for metric, losses in metric_losses.items():
-                                    np.save(
-                                        f"plots/sssm/sssm-{args.task}-{controller}_{metric}.npy",
-                                        losses,
-                                    )
+            # Logging
+            if main_process and relative_step % (eval_period // 2) == 0:
+                colored_print(f"\nStep {relative_step:5d}", Colors.HEADER)
+                colored_print(
+                    f"Train Loss: {train_results['loss']:.6f} | Gradient Norm: {train_results['grad_norm']:.4f} | "
+                    f"Step Time: {train_results['step_time']*1000:.4f}ms | Tokens/sec: {train_results['tokens_per_sec']:.4f}",
+                    Colors.OKBLUE,
+                )
 
-                            if dist.is_initialized():
-                                dist.barrier()
-                            return
+                # Report learning rates for each parameter group
+                # TODO: Check that the learning rates are being adjusted correctly.
+                lr_reports = []
+                for param_group in training_run.optimizer.param_groups:
+                    lr_reports.append(f"{param_group['name']}: {param_group['lr']:.6f}")
+                lr_report = "Learning Rates: " + " | ".join(lr_reports)
+                colored_print(lr_report, Colors.OKCYAN)
 
-            train_metrics = training_run.step(inputs, targets, relative_step)
+        if patient_counter >= patience:
+            break
 
-            # TODO: Report train loss, val loss ,grad norm, lr,
-            # and the group losses for mujoco-v1, v2 in step(), not here.
-
-            pbar.update(1)
-    pbar.close()
-
+    # Post-training processing
     if main_process:
         if best_checkpoint:
-            best_checkpoint_path = os.path.join(checkpoint_dir, best_checkpoint)
+            model_checkpoint, extra_info = best_checkpoint
+            best_model_path = os.path.join(checkpoint_dir, model_checkpoint)
+            best_model_extra_info_path = os.path.join(checkpoint_dir, extra_info)
 
-            # TODO: is is_initialized() needed if run with torchrun?
             if dist.is_initialized():
                 # Load the best checkpoint on the main process and broadcast it to all processes
                 if main_process:
-                    with safe_open(
-                        best_checkpoint_path, framework="pt", device=rank
-                    ) as f:
-                        state_dict = {k: f.get_tensor(k) for k in f.keys()}
-                        stu_model.load_state_dict(state_dict)
+                    # Load model state dict
+                    state_dict = load_file(best_model_path, device=rank)
+                    training_run.model.load_state_dict(state_dict)
+
+                    # Load optimizer and other data
+                    other_data = torch.load(
+                        best_model_extra_info_path, map_location=f"cuda:{rank}"
+                    )
+                    training_run.optimizer.load_state_dict(other_data["optimizer"])
                 dist.barrier()
             else:
-                with safe_open(best_checkpoint_path, framework="pt", device="cpu") as f:
-                    state_dict = {k: f.get_tensor(k) for k in f.keys()}
-                    stu_model.load_state_dict(state_dict)
+                # Load model state dict
+                state_dict = load_file(best_model_path, device="cpu")
+                training_run.model.load_state_dict(state_dict)
+
+                # Load optimizer and other data
+                other_data = torch.load(best_model_extra_info_path, map_location="cpu")
+                training_run.optimizer.load_state_dict(other_data["optimizer"])
 
             print("\nLyla: Here's the best model information for the SSSM model:")
             print(f"    Best model at step {best_model_step}")
             print(f"    Best model validation loss: {best_val_loss:.4f}")
-            print(f"    Best model checkpoint saved at: {best_checkpoint_path}")
+            print(f"    Best model checkpoint saved at: {best_model_path}")
+            print(f"    Best other data saved at: {best_model_extra_info_path}")
 
             # Save the training details to a file
-            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             training_details = f"training_details_sssm_{timestamp}.txt"
             with open(training_details, "w") as f:
                 f.write(
-                    f"Training completed for SSSM on {args.task} with {controller}at: {datetime.now()}\n"
+                    f"Training completed for SSSM on {args.task} with {controller} at: {datetime.now()}\n"
                 )
                 f.write(f"Best model step: {best_model_step}\n")
                 f.write(f"Best model validation loss: {best_val_loss:.4f}\n")
-                f.write(f"Best model checkpoint saved at: {best_checkpoint_path}\n")
+                f.write(f"Best model checkpoint saved at: {best_model_path}\n")
+                f.write(
+                    f"Best model's extra info data saved at: {best_model_extra_info_path}\n"
+                )
             print(
                 f"Lyla: Congratulations on completing the training run for the SSSM model! Details are saved in {training_details}."
             )
@@ -491,20 +540,27 @@ def main() -> None:
                 Colors.WARNING,
             )
 
-        # Save the data points to files
-        np.save("plots/sssm_train_losses.npy", train_losses)
-        np.save("plots/sssm_val_losses.npy", val_losses)
-        np.save("plots/sssm_val_time_steps.npy", val_time_steps)
-        np.save("plots/sssm_grad_norms.npy", grad_norms)
-        if not task["mujoco-v3"]:
-            for metric, losses in metric_losses.items():
-                np.save(f"plots/sssm_{metric}.npy", losses)
+        # Save the final results
+        if main_process:
+            save_results(args.task, controller, train_losses, "train_losses", timestamp)
+            save_results(
+                args.task,
+                controller,
+                val_losses,
+                "val_losses",
+                timestamp,
+            )
+            save_results(args.task, controller, val_time_steps, "val_time_steps", timestamp)
+            save_results(args.task, controller, grad_norms, "grad_norms", timestamp)
 
-        colored_print(
-            "Lyla: It was a pleasure assisting you. Until next time!",
-            Colors.OKGREEN,
-        )
+            if not task["mujoco-v3"]:
+                for metric, losses in metric_losses.items():
+                    save_results(args.task, controller, losses, metric, timestamp)
 
+            colored_print(
+                "Lyla: It was a pleasure assisting you. Until next time!",
+                Colors.OKGREEN,
+            )
 
 if __name__ == "__main__":
     main()

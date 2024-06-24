@@ -1,5 +1,5 @@
 # ==============================================================================#
-# Authors: Windsor Nguyen, Dwaipayan Saha
+# Authors: Windsor Nguyen
 # File: experiment.py
 # ==============================================================================#
 
@@ -20,8 +20,6 @@ from torch.optim import AdamW
 from utils.colors import Colors, colored_print
 
 
-# TODO: Check that the parameter names for m_y adjustments are correct for STU.
-# TODO: Condition the m_y stuff on the model training on STU model
 class Experiment:
     """
     Initializes and maintains the experiment state.
@@ -32,11 +30,10 @@ class Experiment:
         model: nn.Module,
         task: dict[str, bool],
         loss_fn: nn.Module,
+        bsz: int,
+        sl: int,
         optimizer_settings: tuple[int, int, float, float],
         training_stu: bool = False,
-        bsz: int = None,
-        sl: int = None,
-        grad_accum_steps: int = None,
         world_size: int = 1,
         main_process: bool = False,
         device: torch.device = None,
@@ -58,13 +55,15 @@ class Experiment:
             self.num_steps,
             self.max_lr,
             self.min_lr,
+            self.betas,
+            self.eps,
             self.weight_decay,
+            self.use_amsgrad,
         ) = optimizer_settings
 
         # Additional information to process
         self.bsz = bsz
         self.sl = sl
-        self.grad_accum_steps = grad_accum_steps
         self.main_process = main_process
         self.world_size = world_size
 
@@ -74,12 +73,12 @@ class Experiment:
             self.m_y_weight_decay = 0
 
         self.optimizer = self.get_optimizer(
-            self.weight_decay, self.max_lr, self.device.type
+            self.max_lr, self.betas, self.eps, self.weight_decay, self.use_amsgrad
         )
 
         self.model.to(self.device)
 
-    def get_optimizer(self, weight_decay, learning_rate, device_type):
+    def get_optimizer(self, lr, betas, eps, weight_decay, use_amsgrad):
         param_groups = []
         m_y_params = []
         default_params = []
@@ -95,11 +94,13 @@ class Experiment:
             param_groups.extend(
                 [
                     {
+                        "name": "default",
                         "params": default_params,
                         "lr": self.max_lr,
                         "weight_decay": self.weight_decay,
                     },
                     {
+                        "name": "m_y",
                         "params": m_y_params,
                         "lr": self.m_y_learning_rate,
                         "weight_decay": self.m_y_weight_decay,
@@ -112,11 +113,13 @@ class Experiment:
             param_groups.extend(
                 [
                     {
+                        "name": "decay",
                         "params": decay_params,
                         "lr": self.max_lr,
                         "weight_decay": self.weight_decay,
                     },
                     {
+                        "name": "no_decay",
                         "params": nodecay_params,
                         "lr": self.max_lr,
                         "weight_decay": 0.0,
@@ -124,26 +127,29 @@ class Experiment:
                 ]
             )
 
-        if hasattr(self, "master_process") and self.master_process:
-            for i, group in enumerate(param_groups):
-                print(
-                    f'Optimizer | Group {i}: {len(group["params"])} tensors, '
-                    f'{sum(p.numel() for p in group["params"]):,} parameters'
+        if self.main_process:
+            for group in param_groups:
+                colored_print(
+                    f'\nOptimizer | Group {group["name"]}: '
+                    f'{len(group["params"])} tensors, '
+                    f'{sum(p.numel() for p in group["params"]):,} parameters, '
+                    f'lr: {group["lr"]}, weight_decay: {group["weight_decay"]}',
+                    Colors.HEADER,
                 )
 
         fused_available = "fused" in inspect.signature(AdamW).parameters
         use_fused = fused_available and self.device.type == "cuda"
 
-        # TODO What is this the hasattr for? The Experiment class or what...?
-        # If so, just use self.main_process lol
-        if hasattr(self, "master_process") and self.master_process:
-            print(f"Optimizer | Using fused AdamW?: {use_fused}")
+        if self.main_process:
+            colored_print(f"Optimizer | Using fused AdamW?: {use_fused}", Colors.HEADER)
 
         return AdamW(
             param_groups,
-            lr=self.max_lr,
-            betas=(0.9, 0.95),
-            eps=1e-8,
+            lr=lr,
+            betas=betas,
+            eps=eps,
+            weight_decay=weight_decay,
+            amsgrad=use_amsgrad,
             fused=use_fused,
         )
 
@@ -159,24 +165,24 @@ class Experiment:
         Custom learning rate scheduler: linear warmup and cosine decay.
         """
         # 1. Linear warmup for warmup_steps steps
-        if it < self.warmup_steps:
-            return self.max_lr * (it + 1) / self.warmup_steps
+        if it < warmup_steps:
+            return max_lr * (it + 1) / warmup_steps
 
         # 2. If it > lr_decay_iters, return min learning rate
-        if it > self.num_steps:
-            return self.min_lr
+        if it > num_steps:
+            return min_lr
 
         # 3. If in between, cosine decay to down to min learning rate
-        decay_ratio = (it - self.warmup_steps) / (self.num_steps - self.warmup_steps)
+        decay_ratio = (it - warmup_steps) / (num_steps - warmup_steps)
         assert 0 <= decay_ratio <= 1
         coeff = 0.5 * (1 + math.cos(math.pi * decay_ratio))
-        return self.min_lr + coeff * (self.max_lr - self.min_lr)
+        return min_lr + coeff * (max_lr - min_lr)
 
     def step(
         self,
-        inputs: torch.Tensor,
-        targets: torch.Tensor,
-        step: int,
+        inputs: torch.Tensor, 
+        targets: torch.Tensor, 
+        relative_step: int
     ) -> dict[str, float]:
         """
         Perform a single training step.
@@ -184,65 +190,32 @@ class Experiment:
         Args:
             inputs (torch.Tensor): A batch of input data.
             targets (torch.Tensor): A batch of target labels.
+            relative_step (int): The current step relative to the start of training.
 
         Returns:
             dict[str, float]: A dictionary of metrics for the training step.
         """
+        self.model.train()
         self.optimizer.zero_grad()
-        metrics = {}
-        loss_accum = 0.0
         t0 = time()
 
-        for micro_step in range(self.grad_accum_steps):
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
+        inputs, targets = inputs.to(self.device), targets.to(self.device)
 
-            if self.world_size > 1:
-                self.model.require_backward_grad_sync = (
-                    micro_step == self.grad_accum_steps - 1
-                )
+        with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
+            preds, loss_info = self.model(inputs, targets)
 
-            with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
-                preds, loss_info = self.model(inputs, targets)
+        if isinstance(loss_info, tuple):
+            loss, *step_metrics = loss_info
+        else:
+            loss = loss_info
 
-            print(f"loss_info is definitely a tuple: {isinstance(loss_info, tuple)}")
-            if isinstance(loss_info, tuple):
-                loss, step_metrics = loss_info
-                for k, v in step_metrics.items():
-                    metrics[k] = metrics.get(k, 0) + v / self.grad_accum_steps
-            else:
-                loss = loss_info
-
-            loss /= self.grad_accum_steps
-            loss_accum += loss.detach()
-            loss.backward()
+        loss.backward()
 
         if self.world_size > 1:
-            dist.all_reduce(loss_accum, op=dist.ReduceOp.SUM)
-            for k in metrics:
-                dist.all_reduce(
-                    torch.tensor(metrics[k], device=self.device), op=dist.ReduceOp.SUM
-                )
-                metrics[k] = metrics[k].item() / self.world_size
+            dist.all_reduce(loss, op=dist.ReduceOp.AVG)
 
         norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
-        # Step the learning rate scheduler forward
-        # TODO: Ensure that the learning rates for each group are being adjusted accordingly.
-        for param_group in self.optimizer.param_groups:
-            if "m_y" in param_group:
-                param_group["lr"] = self.get_lr(
-                    step,
-                    self.warmup_steps,
-                    self.num_steps,
-                    self.m_y_learning_rate,
-                    self.min_lr,
-                )
-            else:
-                param_group["lr"] = self.get_lr(
-                    step, self.warmup_steps, self.num_steps, self.max_lr, self.min_lr
-                )
-
-        # Step the optimizer forward
         self.optimizer.step()
 
         # Time how long this training step took
@@ -250,112 +223,108 @@ class Experiment:
             torch.cuda.synchronize()
         t1 = time()
         dt = t1 - t0
-
-        toks_processed = self.bsz * self.sl * self.grad_accum_steps * self.world_size
+        toks_processed = self.bsz * self.sl * self.world_size
         toks_per_sec = toks_processed / dt
 
-        # Add the loss and other computed values to the metrics
-        metrics["loss"] = loss_accum
-        metrics["lr"] = self.optimizer.param_groups[0]["lr"]  # TODO: Why [0]?
-        metrics["norm"] = norm.item()
-        metrics["dt"] = dt
-        metrics["toks_per_sec"] = toks_per_sec
-
-        if self.main_process:
-            # Base metrics string
-            metrics_str = f"step {step:5d} | loss: {metrics['loss']:.6f} | lr: {metrics['lr']:.4e} | norm: {metrics['norm']:.4f} | dt: {metrics['dt']*1000:.2f}ms | tok/sec: {metrics['toks_per_sec']:.2f}"
-
-            # Add task-specific metrics if available
-            if "coordinate_loss" in metrics:
-                metrics_str += f" | coord: {metrics['coordinate_loss']:.4f}"
-            if "orientation_loss" in metrics:
-                metrics_str += f" | orient: {metrics['orientation_loss']:.4f}"
-            if "angle_loss" in metrics:
-                metrics_str += f" | angle: {metrics['angle_loss']:.4f}"
-            if "coordinate_velocity_loss" in metrics:
-                metrics_str += (
-                    f" | coord_vel: {metrics['coordinate_velocity_loss']:.4f}"
+        # Step the learning rate scheduler forward
+        for param_group in self.optimizer.param_groups:
+            if param_group['name'] == "m_y":
+                param_group["lr"] = self.get_lr(
+                    relative_step,
+                    self.warmup_steps,
+                    self.num_steps,
+                    self.m_y_learning_rate,
+                    self.min_lr,
                 )
-            if "angular_velocity_loss" in metrics:
-                metrics_str += f" | ang_vel: {metrics['angular_velocity_loss']:.4f}"
+            else:
+                param_group["lr"] = self.get_lr(
+                    relative_step,
+                    self.warmup_steps,
+                    self.num_steps,
+                    self.max_lr,
+                    self.min_lr,
+                )
 
-            print(metrics_str)
+        metrics = {
+            "loss": loss.item(),
+            "grad_norm": norm.item(),
+            "step_time": dt,
+            "tokens_per_sec": toks_per_sec,
+        }
+
+        # Add additional metrics if available
+        if isinstance(loss_info, dict):
+            metrics.update({k: v.item() if isinstance(v, torch.Tensor) else v for k, v in loss_info.items()})
 
         return metrics
 
     def evaluate(self, dataloader: DataLoader) -> dict[str, float]:
-        """Evaluate the model over an entire dataset.
+        """Evaluate the model over an entire validation dataset.
 
         Args:
-            dataloader (DataLoader):
-              A DataLoader providing batches of data for evaluation.
+            dataloader (DataLoader): A DataLoader providing batches of data for evaluation.
 
         Returns:
-            Dict[str, float]:
-              A Dictionary of aggregated metrics over the dataset.
+            Dict[str, float]: A Dictionary of aggregated metrics over the dataset.
         """
-
-        # TODO: Bring distributed loss aggregation into this function.
         self.model.eval()
-        total_loss = 0.0
-        metrics = {}
-        num_batches = 0
+        val_steps = len(dataloader)
+        metrics_accum = {
+            "loss": 0.0,
+            "tokens_processed": 0,
+            "total_time": 0.0
+        }
+        additional_metrics = {}
 
-        with (
-            torch.no_grad(),
-            tqdm(total=len(dataloader), desc="Evaluating model") as pbar,
-        ):
-            # TODO: might have to conditional this with mujoco-v3 flag too
-            for inputs, targets, filename in dataloader:
+        with torch.no_grad(), tqdm(total=val_steps, desc="Validating", disable=not self.main_process) as pbar:
+            for inputs, targets in dataloader:
+                t0 = time()
                 inputs, targets = inputs.to(self.device), targets.to(self.device)
 
                 with torch.autocast(device_type=self.device.type, dtype=torch.bfloat16):
                     preds, loss_info = self.model(inputs, targets)
 
-                # TODO: Make this prettier and not so ugly.
                 if isinstance(loss_info, tuple):
-                    if len(loss_info) == 1:
-                        loss = loss_info[0]
-                        step_metrics = {}
-                    elif len(loss_info) == 2:
-                        loss, step_metrics = loss_info
-                    else:
-                        raise ValueError(f"Unexpected loss_info structure: {loss_info}")
-                    for k, v in step_metrics.items():
-                        metrics[k] = metrics.get(k, 0) + v
+                    loss, *step_metrics = loss_info
                 else:
                     loss = loss_info
-                    step_metrics = {}
 
-                total_loss += loss.item() if loss is not None else 0.0
-                num_batches += 1
+                # Accumulate loss
+                metrics_accum["loss"] += loss.item()
+
+                # Accumulate additional metrics if available
+                if isinstance(loss_info, dict):
+                    for key, value in loss_info.items():
+                        if key not in additional_metrics:
+                            additional_metrics[key] = 0.0
+                        additional_metrics[key] += value.item() if isinstance(value, torch.Tensor) else value
+
+                # Time tracking
+                if self.device.type == "cuda":
+                    torch.cuda.synchronize()
+                t1 = time()
+                dt = t1 - t0
+
+                # Token processing tracking
+                metrics_accum["tokens_processed"] += inputs.numel()
+                metrics_accum["total_time"] += dt
+
                 pbar.update(1)
-            pbar.close()
 
-        # Aggregate metrics across all processes
+        # Average the accumulated metrics
+        metrics_avg = {
+            "loss": metrics_accum["loss"] / val_steps,
+            "tokens_per_sec": metrics_accum["tokens_processed"] / metrics_accum["total_time"]
+        }
+
+        # Average additional metrics
+        for key, value in additional_metrics.items():
+            metrics_avg[key] = value / val_steps
+
+        # Synchronize metrics across processes if using distributed training
         if self.world_size > 1:
-            for k in metrics:
-                dist.all_reduce(
-                    torch.tensor(metrics[k], device=self.device), op=dist.ReduceOp.SUM
-                )
-                metrics[k] = metrics[k].item() / self.world_size
+            for key in metrics_avg:
+                dist.all_reduce(torch.tensor(metrics_avg[key]).to(self.device), op=dist.ReduceOp.AVG)
+                metrics_avg[key] = metrics_avg[key].item()
 
-            dist.all_reduce(
-                torch.tensor(total_loss, device=self.device), op=dist.ReduceOp.SUM
-            )
-            dist.all_reduce(
-                torch.tensor(num_batches, device=self.device), op=dist.ReduceOp.SUM
-            )
-
-        avg_loss = total_loss / num_batches
-        metrics["loss"] = avg_loss
-
-        if self.main_process:
-            metrics_str = f"Evaluation | loss: {avg_loss:.6f}"
-            for k, v in metrics.items():
-                if k != "loss":
-                    metrics_str += f" | {k}: {v:.4f}"
-            print(metrics_str)
-
-        self.model.train()
-        return metrics
+        return metrics_avg
