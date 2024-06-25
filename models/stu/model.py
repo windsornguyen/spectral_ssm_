@@ -53,7 +53,8 @@ class STU(nn.Module):
         self.n_embd = configs.n_embd
         self.d_out = configs.d_out
         self.sl, self.k = configs.sl, configs.num_eigh
-        self.eigh = stu_utils.get_top_hankel_eigh(self.sl, self.k, self.device)
+        self.bias = configs.bias
+        self.eigh = self.get_top_hankel_eigh(self.sl, self.k)
 
         # Initialize M matrices
         self.auto_reg_k_u = configs.auto_reg_k_u
@@ -61,36 +62,64 @@ class STU(nn.Module):
         self.learnable_m_y = configs.learnable_m_y
         self.m_u = nn.Parameter(torch.empty(self.d_out, self.d_out, self.auto_reg_k_u))
         self.m_phi = nn.Parameter(torch.empty(self.d_out * self.k, self.d_out))
-        self.m_y = (
-            nn.Parameter(torch.empty(self.d_out, self.auto_reg_k_y, self.d_out))
-            if self.learnable_m_y
-            else self.register_buffer(
-                "m_y", torch.empty(self.d_out, self.auto_reg_k_y, self.d_out)
+        if self.learnable_m_y:
+            self.m_y = nn.Parameter(
+                torch.empty(self.d_out, self.auto_reg_k_y, self.d_out)
             )
-        )
+        else:
+            self.register_buffer(
+                "m_y", torch.zeros(self.d_out, self.auto_reg_k_y, self.d_out)
+            )
 
-        # The output projection
-        self.proj = nn.Linear(self.n_embd, self.d_out)
-        self.proj.SCALE_INIT = 1
+        self.ln_1 = nn.LayerNorm(self.n_embd, bias=self.bias)
+        self.ln_2 = nn.LayerNorm(self.n_embd, bias=self.bias)
+        self.dropout = nn.Dropout(configs.dropout)
 
-        # Regularization
-        self.dropout = configs.dropout
-        self.stu_dropout = nn.Dropout(self.dropout)
-        self.resid_dropout = nn.Dropout(self.dropout)
+
+    def get_hankel_matrix(self, n: int) -> torch.Tensor:
+        """
+        Generate a spectral Hankel matrix.
+
+        Args:
+            n (int): Number of rows in square spectral Hankel matrix.
+
+        Returns:
+            torch.Tensor: A spectral Hankel matrix of shape [n, n].
+        """
+        indices = torch.arange(1, n + 1, device=self.device)  # -> [n]
+        sums = indices[:, None] + indices[None, :]  # -> [n, n]
+        z = 2.0 / (sums**3 - sums)  # -> [n, n]
+        return z
+
+    def get_top_hankel_eigh(self, n: int, k: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get top k eigenvalues and eigenvectors of spectral Hankel matrix.
+
+        Args:
+            n (int): Number of rows in square spectral Hankel matrix.
+            k (int): Number of eigenvalues to return.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: A tuple of eigenvalues of shape [k,] and
+                eigenvectors of shape [n, k].
+        """
+        hankel_matrix = self.get_hankel_matrix(n).to(self.device)  # -> [n, n]
+        eig_vals, eig_vecs = torch.linalg.eigh(hankel_matrix)  # -> [n], [n, n]
+        return eig_vals[-k:], eig_vecs[:, -k:]  # -> [k, (n, k)]
+
 
     def forward(self, inputs):
-        eig_vals, eig_vecs = self.eigh
+        z = inputs
+        inputs = self.ln_1(inputs)
 
-        x_tilde = stu_utils.compute_x_tilde(inputs, (eig_vals, eig_vecs))
-        x_tilde = self.stu_dropout(x_tilde)
-
+        x_tilde = stu_utils.compute_x_tilde(inputs, self.eigh)
         delta_phi = x_tilde @ self.m_phi
-
         delta_ar_u = stu_utils.compute_ar_x_preds(self.m_u, inputs)
 
-        y_t = stu_utils.compute_y_t(self.m_y, delta_phi + delta_ar_u)
+        delta = self.ln_2(delta_phi + delta_ar_u)
+        y_t = stu_utils.compute_y_t(self.m_y, delta)
 
-        return self.resid_dropout(y_t)
+        return z + self.dropout(y_t)
 
 
 class FFN(nn.Module):
@@ -100,20 +129,14 @@ class FFN(nn.Module):
 
     def __init__(self, configs):
         super(FFN, self).__init__()
+        self.h_dim = (configs.scale * configs.n_embd * 2) // 3
         # TODO: Consider implementing Squared ReLU from https://arxiv.org/pdf/2109.08668 ??
-        self.swiglu = SwiGLU(
-            configs.n_embd, configs.scale * configs.n_embd, bias=configs.bias
-        )
-        self.proj = nn.Linear(
-            configs.scale * configs.n_embd, configs.d_out, bias=configs.bias
-        )
+        self.swiglu = SwiGLU(dim=configs.n_embd, h_dim=self.h_dim, bias=configs.bias)
         self.dropout = nn.Dropout(configs.dropout)
 
     def forward(self, x):
         x = self.swiglu(x)
-        x = self.proj(x)
-        x = self.dropout(x)
-        return x
+        return self.dropout(x)
 
 
 class STUBlock(nn.Module):
@@ -168,7 +191,7 @@ class SSSM(nn.Module):
 
         # Initialize all weights
         self.m_x = float(self.d_out) ** -0.5
-        self.std = 0.02
+        self.std = self.n_embd ** -0.5
         self.apply(self._init_weights)
 
         # Report the number of parameters
@@ -213,9 +236,6 @@ class SSSM(nn.Module):
             module (nn.Module): The module to initialize.
         """
         if isinstance(module, nn.Linear):
-            if hasattr(module, "SCALE_INIT"):
-                # Scale by 2 to account for stu and ffn sub-layer
-                self.std *= (2 * self.n_layers) ** -0.5
             torch.nn.init.normal_(module.weight, mean=0.0, std=self.std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)

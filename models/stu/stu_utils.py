@@ -8,7 +8,7 @@
 import torch
 
 
-
+# TODO: Moved to models/stu class defn
 def get_hankel_matrix(n: int) -> torch.Tensor:
     """
     Generate a spectral Hankel matrix.

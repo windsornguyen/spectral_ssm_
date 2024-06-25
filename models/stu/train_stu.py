@@ -134,7 +134,7 @@ def main() -> None:
             os.makedirs("results/")
 
     # Shared hyperparameters
-    n_layers: int = 12
+    n_layers: int = 6
     scale: int = 4
     bias: bool = False
     dropout: float = 0.10
@@ -294,7 +294,7 @@ def main() -> None:
 
     # General training hyperparameters
     training_stu = True
-    num_epochs: int = 9
+    num_epochs: int = 3
     steps_per_epoch = len(train_loader)
     num_steps: int = steps_per_epoch * num_epochs
     dilation: int = 1
